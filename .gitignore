@@ -1,5 +1,6 @@
 # 1. Python 依赖与缓存
 venv/
+.venv/
 __pycache__/
 *.pyc
 .pytest_cache/
@@ -21,5 +22,3 @@ data/cache/
 # 5. 运行时文件
 .run/
 logs/
-
-.venv/
