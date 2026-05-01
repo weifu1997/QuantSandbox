@@ -17,3 +17,9 @@ data/cache/
 .vscode/
 .idea/
 .DS_Store
+
+# 5. 运行时文件
+.run/
+logs/
+
+.venv/

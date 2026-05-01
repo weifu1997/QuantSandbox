@@ -1,27 +1,32 @@
 <template>
   <div class="detail-container">
     <div class="header">
-      <el-button @click="goBack" type="info" plain icon="ArrowLeft">返回总览</el-button>
-      <h2 class="ticker-title">标的详情: {{ ticker }}</h2>
+      <el-button @click="goBack" type="info" plain :icon="ArrowLeft">返回总览</el-button>
+      <div class="title-block">
+        <h2 class="ticker-title">
+          <span class="stock-name">{{ stockName || ticker }}</span>
+          <span class="ticker-code">{{ ticker }}</span>
+        </h2>
+      </div>
       <div class="time-controls">
         <span class="progress-text">推演进度: {{ visibleCount }} / {{ totalDays }} 天</span>
         <el-button-group>
-          <el-button type="warning" plain icon="RefreshLeft" @click="resetPlayback" :disabled="loading">重置</el-button>
-          <el-button type="success" icon="VideoPlay" @click="stepForward" :disabled="loading || isFinished">
+          <el-button type="warning" plain :icon="RefreshLeft" @click="resetPlayback" :disabled="loading">重置</el-button>
+          <el-button type="success" :icon="VideoPlay" @click="stepForward" :disabled="loading || isFinished">
             推演 30 天 ⏩
           </el-button>
-          <el-button type="primary" plain icon="FastForward" @click="showAll" :disabled="loading || isFinished">揭晓全部</el-button>
+          <el-button type="primary" plain :icon="Right" @click="showAll" :disabled="loading || isFinished">揭晓全部</el-button>
         </el-button-group>
       </div>
     </div>
 
     <div class="stats-panel" v-if="metadata.total_return !== undefined" v-loading="loading">
-      <div class="stat-box"><div class="stat-label">期末净值</div><div class="stat-value" :class="metadata.final_equity >= metadata.initial_cash ? 'red' : 'green'">¥{{ metadata.final_equity }}</div></div>
-      <div class="stat-box"><div class="stat-label">累计收益率</div><div class="stat-value" :class="metadata.total_return >= 0 ? 'red' : 'green'">{{ metadata.total_return }}%</div></div>
-      <div class="stat-box"><div class="stat-label">最大回撤</div><div class="stat-value green">{{ metadata.max_drawdown }}%</div></div>
-      <div class="stat-box"><div class="stat-label">夏普比率</div><div class="stat-value">{{ metadata.sharpe_ratio }}</div></div>
-      <div class="stat-box"><div class="stat-label">交易胜率</div><div class="stat-value">{{ metadata.win_rate }}%</div></div>
-      <div class="stat-box"><div class="stat-label">盈亏比</div><div class="stat-value">{{ metadata.pnl_ratio }}</div></div>
+      <div class="stat-box"><div class="stat-label">期末净值</div><div class="stat-value" :class="Number(metadata.total_return) >= 0 ? 'red' : 'green'">¥{{ metadata.final_equity ?? '--' }}</div></div>
+      <div class="stat-box"><div class="stat-label">累计收益率</div><div class="stat-value" :class="Number(metadata.total_return) >= 0 ? 'red' : 'green'">{{ metadata.total_return ?? '--' }}%</div></div>
+      <div class="stat-box"><div class="stat-label">最大回撤</div><div class="stat-value green">{{ metadata.max_drawdown ?? '--' }}%</div></div>
+      <div class="stat-box"><div class="stat-label">夏普比率</div><div class="stat-value">{{ metadata.sharpe_ratio ?? '--' }}</div></div>
+      <div class="stat-box"><div class="stat-label">交易胜率</div><div class="stat-value">{{ metadata.win_rate ?? '--' }}%</div></div>
+      <div class="stat-box"><div class="stat-label">盈亏比</div><div class="stat-value">{{ metadata.pnl_ratio ?? '--' }}</div></div>
     </div>
 
     <div class="charts-wrapper" v-loading="loading">
@@ -32,7 +37,8 @@
     <div class="logs-wrapper" v-loading="loading">
       <h3 class="logs-title">📝 已触发交易日志 ({{ visibleLogs.length }} 笔操作)</h3>
       <el-table :data="visibleLogs" style="width: 100%" height="250" class="dark-table" size="small">
-        <el-table-column prop="timestamp" label="交易时间" width="120" />
+        <el-table-column prop="signal_date" label="信号日期" width="120" />
+        <el-table-column prop="execution_date" label="成交日期" width="120" />
         <el-table-column prop="action" label="动作" width="80">
           <template #default="scope">
             <span :class="scope.row.action === '买入' ? 'text-red' : 'text-green'">{{ scope.row.action }}</span>
@@ -50,6 +56,7 @@
 <script setup>
 import { ref, onMounted, onUnmounted, nextTick, computed } from 'vue';
 import { useRouter, useRoute } from 'vue-router';
+import { ArrowLeft, RefreshLeft, VideoPlay, Right } from '@element-plus/icons-vue';
 import { getStockDetail } from '../api';
 import { createChart } from 'lightweight-charts';
 import { ElMessage } from 'element-plus';
@@ -60,6 +67,7 @@ const route = useRoute();
 
 const loading = ref(true);
 const metadata = ref({});
+const stockName = ref('');
 
 // 🌟 核心引擎内存：存放后端的全量数据
 let fullKlineData = [];
@@ -104,7 +112,7 @@ const renderSlice = () => {
     candlestickSeries.setMarkers(currentMarkers);
     
     // 3. 动态更新日志表格
-    visibleLogs.value = fullLogs.filter(log => new Date(log.timestamp).getTime() <= lastVisibleDate);
+    visibleLogs.value = fullLogs.filter(log => new Date(log.execution_date).getTime() <= lastVisibleDate);
   }
 
   // 4. 将切片推入图表
@@ -139,7 +147,12 @@ const initChartAndData = async () => {
     const res = await getStockDetail(props.ticker, start, end);
     const data = res.data;
     metadata.value = data.metadata;
-    fullLogs = data.logs;
+    stockName.value = data.name || '';
+    fullLogs = (data.logs || []).map(log => ({
+      ...log,
+      signal_date: log.signal_date || log.timestamp,
+      execution_date: log.execution_date || log.timestamp,
+    }));
 
     const seenDates = new Set();
     data.klines.forEach(item => {
@@ -150,11 +163,14 @@ const initChartAndData = async () => {
       }
     });
 
-    data.logs.forEach(log => {
-      if (seenDates.has(log.timestamp)) {
+    fullLogs.forEach(log => {
+      const markerDate = log.execution_date;
+      if (seenDates.has(markerDate)) {
         fullMarkers.push({
-          time: log.timestamp, position: log.action === '买入' ? 'belowBar' : 'aboveBar',
-          color: log.action === '买入' ? '#F6465D' : '#0ECB81', shape: log.action === '买入' ? 'arrowUp' : 'arrowDown',
+          time: markerDate,
+          position: log.action === '买入' ? 'belowBar' : 'aboveBar',
+          color: log.action === '买入' ? '#F6465D' : '#0ECB81',
+          shape: log.action === '买入' ? 'arrowUp' : 'arrowDown',
           text: log.action === '买入' ? '买入' : '卖出',
         });
       }
@@ -175,11 +191,19 @@ const initChartAndData = async () => {
     equityChart = createChart(equityChartRef.value, { ...darkThemeOptions, width: equityChartRef.value.clientWidth, height: 200 });
     areaSeries = equityChart.addAreaSeries({ topColor: 'rgba(245, 158, 11, 0.4)', bottomColor: 'rgba(245, 158, 11, 0.0)', lineColor: '#f59e0b', lineWidth: 2 });
 
+    let syncingFromKline = false;
+    let syncingFromEquity = false;
     klineChart.timeScale().subscribeVisibleLogicalRangeChange(timeRange => {
-      if (timeRange) equityChart.timeScale().setVisibleLogicalRange(timeRange);
+      if (!timeRange || syncingFromEquity) return;
+      syncingFromKline = true;
+      equityChart.timeScale().setVisibleLogicalRange(timeRange);
+      syncingFromKline = false;
     });
     equityChart.timeScale().subscribeVisibleLogicalRangeChange(timeRange => {
-      if (timeRange) klineChart.timeScale().setVisibleLogicalRange(timeRange);
+      if (!timeRange || syncingFromKline) return;
+      syncingFromEquity = true;
+      klineChart.timeScale().setVisibleLogicalRange(timeRange);
+      syncingFromEquity = false;
     });
 
     // 首次渲染切片
@@ -205,7 +229,10 @@ onUnmounted(() => {
 /* 样式新增了时空控制台的排版，其余保持不变 */
 .detail-container { background-color: #0b0e14; min-height: 100vh; padding: 20px; color: #d1d4dc; }
 .header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px; flex-wrap: wrap; gap: 15px;}
-.ticker-title { margin: 0; color: #fff; font-size: 24px;}
+.title-block { display: flex; flex-direction: column; gap: 2px; min-width: 180px; }
+.ticker-title { margin: 0; color: #fff; font-size: 22px; font-weight: 600; line-height: 1.2; display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.stock-name { font-size: 22px; font-weight: 600; color: #fff; }
+.ticker-code { font-size: 14px; font-weight: 400; color: #8a919e; }
 .time-controls { display: flex; align-items: center; gap: 15px; background: #131722; padding: 5px 15px; border-radius: 8px; border: 1px solid #2B3139;}
 .progress-text { font-size: 14px; font-weight: bold; color: #f59e0b; }
 .stats-panel { display: flex; flex-wrap: wrap; gap: 15px; background-color: #131722; padding: 15px; border-radius: 8px; margin-bottom: 20px; border: 1px solid #2B3139; }

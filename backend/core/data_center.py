@@ -1,76 +1,354 @@
 import os
 import time
-import random  # 新增：引入随机数模块
+import random
 import glob
+import json
+import sqlite3
+import hashlib
+import urllib.request
+import urllib.error
 import pandas as pd
 import akshare as ak
+import yaml
 from datetime import datetime
+
 
 class DataCenter:
     """
     量化系统的数据神经中枢
-    负责调用 akshare 获取 A 股历史数据，并进行本地高速缓存
+    负责调用 akshare / tushare 代理获取 A 股历史数据，并进行本地高速缓存
     """
+
     def __init__(self, cache_dir: str = "data/cache"):
         self.base_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../"))
         self.cache_dir = os.path.join(self.base_path, cache_dir)
         os.makedirs(self.cache_dir, exist_ok=True)
-        
+
         self.columns_map = {
-            "日期": "date", "开盘": "open", "收盘": "close", 
-            "最高": "high", "最低": "low", "成交量": "volume", 
-            "成交额": "amount", "振幅": "amplitude", "涨跌幅": "pct_change", 
+            "日期": "date", "开盘": "open", "收盘": "close",
+            "最高": "high", "最低": "low", "成交量": "volume",
+            "成交额": "amount", "振幅": "amplitude", "涨跌幅": "pct_change",
             "涨跌额": "change_amount", "换手率": "turnover"
         }
+
+        # Tushare 代理服务（通过项目配置文件读取）
+        self.tushare_base_url = ""
+        self.tushare_token = ""
+        self._load_tushare_config()
+        print(f"🔧 [DataCenter] Tushare enabled={bool(self.tushare_base_url and self.tushare_token)} base_url={self.tushare_base_url or 'EMPTY'}")
+        self._stock_meta_cache = {}
+        self.cache_index_db = os.path.join(self.cache_dir, "cache_index.sqlite")
+        self._init_cache_index_db()
+        self.migrate_legacy_cache_files()
+
+    def _load_tushare_config(self):
+        """从项目根 config.yaml 读取 Tushare 配置"""
+        config_path = os.path.abspath(os.path.join(self.base_path, "config.yaml"))
+        if not os.path.exists(config_path):
+            return
+        try:
+            with open(config_path, "r", encoding="utf-8") as f:
+                config = yaml.safe_load(f) or {}
+            ds = config.get("data_source", {}).get("tushare", {})
+            enabled = bool(ds.get("enabled", False))
+            base_url = str(ds.get("base_url", "")).strip().rstrip("/")
+            token = str(ds.get("token", "")).strip()
+            if enabled and base_url and token:
+                self.tushare_base_url = base_url
+                self.tushare_token = token
+            else:
+                self.tushare_base_url = ""
+                self.tushare_token = ""
+        except Exception as e:
+            print(f"⚠️ [DataCenter] 读取 Tushare 配置失败: {e}")
 
     def _clean_symbol(self, symbol: str) -> str:
         if symbol.startswith(("sh", "sz")):
             return symbol[2:]
         return symbol
 
-    def fetch_stock_data(self, 
-                         symbol: str, 
-                         start_date: str = "20240101", 
-                         end_date: str = "20260421", 
-                         force_update: bool = False) -> pd.DataFrame:
-        
-        # 1. 智能模糊匹配：查找本地是否包含该股票代码的任何 parquet 文件
-        search_pattern = os.path.join(self.cache_dir, f"{symbol}_*.parquet")
-        existing_caches = glob.glob(search_pattern)
+    def _to_ts_code(self, symbol: str) -> str:
+        """把 sh600036 / sz000858 转成 Tushare 的 600036.SH / 000858.SZ"""
+        code = self._clean_symbol(symbol)
+        if symbol.startswith("sh"):
+            return f"{code}.SH"
+        if symbol.startswith("sz"):
+            return f"{code}.SZ"
+        return symbol
 
-        # 如果找到了缓存文件，且没有强制要求更新
-        if not force_update and existing_caches:
-            # 默认读取找到的第一个该股票的缓存文件
-            cache_file = existing_caches[0]
-            print(f"📦 [DataCenter] 命中本地宽泛缓存: {os.path.basename(cache_file)}")
-            
-            # 读取全量本地数据
-            df = pd.read_parquet(cache_file)
-            
-            # 在内存中进行时间切片，只切出引擎当前需要的日期段返回
-            mask = (df['date'] >= pd.to_datetime(start_date)) & (df['date'] <= pd.to_datetime(end_date))
-            return df.loc[mask].copy().reset_index(drop=True)
+    def _get_cache_conn(self):
+        conn = sqlite3.connect(self.cache_index_db)
+        conn.row_factory = sqlite3.Row
+        return conn
 
-        # 2. 如果本地彻底没有这只股票，再走网络下载逻辑
+    def _init_cache_index_db(self):
+        """初始化缓存索引数据库"""
+        with self._get_cache_conn() as conn:
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS cache_files (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    symbol TEXT NOT NULL,
+                    file_path TEXT NOT NULL,
+                    file_name TEXT NOT NULL,
+                    start_date TEXT NOT NULL,
+                    end_date TEXT NOT NULL,
+                    data_source TEXT,
+                    version INTEGER DEFAULT 1,
+                    is_active INTEGER DEFAULT 1,
+                    is_complete INTEGER DEFAULT 1,
+                    file_size INTEGER,
+                    file_hash TEXT,
+                    source_detail TEXT,
+                    created_at TEXT,
+                    updated_at TEXT,
+                    remark TEXT
+                )
+                """
+            )
+            # 兼容已有库：补 source_detail 字段
+            columns = [row[1] for row in conn.execute("PRAGMA table_info(cache_files)").fetchall()]
+            if "source_detail" not in columns:
+                conn.execute("ALTER TABLE cache_files ADD COLUMN source_detail TEXT")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_cache_files_symbol ON cache_files(symbol)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_cache_files_active ON cache_files(symbol, is_active)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_cache_files_range ON cache_files(symbol, start_date, end_date)")
+            conn.commit()
+
+    def _upsert_cache_record(self, symbol: str, file_path: str, start_date: str, end_date: str, data_source: str = "remote", source_detail: str = "", is_complete: int = 1, remark: str = ""):
+        """写入或更新缓存索引记录"""
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        file_name = os.path.basename(file_path)
+        file_size = os.path.getsize(file_path) if os.path.exists(file_path) else None
+        file_hash = None
+        if os.path.exists(file_path):
+            with open(file_path, "rb") as f:
+                file_hash = hashlib.md5(f.read()).hexdigest()
+
+        with self._get_cache_conn() as conn:
+            existing = conn.execute(
+                "SELECT id FROM cache_files WHERE symbol = ? AND file_path = ? LIMIT 1",
+                (symbol, file_path),
+            ).fetchone()
+            if existing:
+                conn.execute(
+                    """
+                    UPDATE cache_files
+                    SET file_name = ?, start_date = ?, end_date = ?, data_source = ?, source_detail = ?,
+                        version = version + 1, is_active = 1, is_complete = ?,
+                        file_size = ?, file_hash = ?, updated_at = ?, remark = ?
+                    WHERE id = ?
+                    """,
+                    (file_name, start_date, end_date, data_source, source_detail, is_complete, file_size, file_hash, now, remark, existing[0]),
+                )
+            else:
+                conn.execute(
+                    """
+                    INSERT INTO cache_files (
+                        symbol, file_path, file_name, start_date, end_date,
+                        data_source, source_detail, version, is_active, is_complete,
+                        file_size, file_hash, created_at, updated_at, remark
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, 1, 1, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (symbol, file_path, file_name, start_date, end_date, data_source, source_detail, is_complete, file_size, file_hash, now, now, remark),
+                )
+            conn.execute("UPDATE cache_files SET is_active = 0 WHERE symbol = ? AND file_path <> ?", (symbol, file_path))
+            conn.execute(
+                "UPDATE cache_files SET source_detail = ? WHERE symbol = ? AND file_path = ?",
+                (source_detail or data_source, symbol, file_path),
+            )
+            conn.commit()
+
+    def migrate_legacy_cache_files(self):
+        """启动时扫描旧缓存文件并登记索引（幂等）"""
+        try:
+            files = [f for f in os.listdir(self.cache_dir) if f.endswith(".parquet")]
+            for filename in files:
+                full_path = os.path.join(self.cache_dir, filename)
+                if not os.path.exists(full_path):
+                    continue
+
+                # 幂等保护：已登记同一路径则跳过
+                with self._get_cache_conn() as conn:
+                    exists = conn.execute(
+                        "SELECT id FROM cache_files WHERE file_path = ? LIMIT 1",
+                        (full_path,),
+                    ).fetchone()
+                if exists:
+                    continue
+
+                if filename.endswith(".parquet") and filename.count("_") >= 2:
+                    parts = filename.replace(".parquet", "").split("_")
+                    symbol = parts[0]
+                    start_date = parts[-2]
+                    end_date = parts[-1]
+                    if len(start_date) == 8 and len(end_date) == 8:
+                        self._upsert_cache_record(
+                            symbol=symbol,
+                            file_path=full_path,
+                            start_date=start_date,
+                            end_date=end_date,
+                            data_source="legacy",
+                            is_complete=1,
+                            remark="auto_migrated_legacy",
+                        )
+                elif filename.endswith(".parquet") and "_" not in filename:
+                    symbol = filename.replace(".parquet", "")
+                    try:
+                        df = pd.read_parquet(full_path, columns=["date"])
+                        if not df.empty and "date" in df.columns:
+                            dates = pd.to_datetime(df["date"], errors="coerce").dropna()
+                            if not dates.empty:
+                                self._upsert_cache_record(
+                                    symbol=symbol,
+                                    file_path=full_path,
+                                    start_date=dates.min().strftime("%Y%m%d"),
+                                    end_date=dates.max().strftime("%Y%m%d"),
+                                    data_source="legacy",
+                                    source_detail="legacy",
+                                    is_complete=1,
+                                    remark="auto_migrated_legacy",
+                                )
+                    except Exception:
+                        continue
+        except Exception as e:
+            print(f"⚠️ [DataCenter] 迁移旧缓存索引失败: {e}")
+
+    def _get_cache_record(self, symbol: str):
+        """获取指定股票当前激活的缓存记录"""
+        with self._get_cache_conn() as conn:
+            cur = conn.execute(
+                """
+                SELECT * FROM cache_files
+                WHERE symbol = ? AND is_active = 1
+                ORDER BY end_date DESC, version DESC, updated_at DESC
+                LIMIT 1
+                """,
+                (symbol,),
+            )
+            row = cur.fetchone()
+            return dict(row) if row else None
+
+    def _get_cache_records(self, symbol: str):
+        """获取指定股票所有激活缓存记录"""
+        with self._get_cache_conn() as conn:
+            cur = conn.execute(
+                """
+                SELECT * FROM cache_files
+                WHERE symbol = ? AND is_active = 1
+                ORDER BY start_date ASC, end_date ASC, version DESC, updated_at DESC
+                """,
+                (symbol,),
+            )
+            return [dict(row) for row in cur.fetchall()]
+
+    def _load_cache_df(self, file_path: str) -> pd.DataFrame:
+        """统一读取 parquet 缓存"""
+        df = pd.read_parquet(file_path)
+        if not df.empty and "date" in df.columns:
+            df["date"] = pd.to_datetime(df["date"], errors="coerce")
+            df = df.sort_values(by="date", ascending=True).reset_index(drop=True)
+        return df
+
+    def _write_main_cache(self, symbol: str, df: pd.DataFrame, start_date: str, end_date: str, data_source: str, remark: str = "") -> str:
+        """写入单票主缓存并更新索引"""
+        file_path = os.path.join(self.cache_dir, f"{symbol}.parquet")
+        df.to_parquet(file_path, index=False)
+        self._upsert_cache_record(
+            symbol=symbol,
+            file_path=file_path,
+            start_date=start_date,
+            end_date=end_date,
+            data_source=data_source,
+            source_detail=data_source,
+            is_complete=1,
+            remark=remark,
+        )
+        return file_path
+
+    def _merge_cache_frames(self, old_df: pd.DataFrame, new_df: pd.DataFrame) -> pd.DataFrame:
+        """合并旧缓存和新数据，按 date 去重并升序排列"""
+        if old_df is None or old_df.empty:
+            merged = new_df.copy()
+        elif new_df is None or new_df.empty:
+            merged = old_df.copy()
+        else:
+            merged = pd.concat([old_df, new_df], ignore_index=True, sort=False)
+
+        if "date" in merged.columns:
+            merged["date"] = pd.to_datetime(merged["date"], errors="coerce")
+            merged = merged.dropna(subset=["date"])
+            merged = merged.drop_duplicates(subset=["date"], keep="last")
+            merged = merged.sort_values(by="date", ascending=True).reset_index(drop=True)
+        return merged
+
+    def _normalize_and_enrich(self, df: pd.DataFrame, symbol: str) -> pd.DataFrame:
+        """统一清洗、补充字段"""
+        if df is None or df.empty:
+            return pd.DataFrame()
+
+        if "date" not in df.columns:
+            df.rename(columns=self.columns_map, inplace=True)
+
+        if "date" in df.columns:
+            df["date"] = pd.to_datetime(df["date"], errors="coerce")
+            df = df.dropna(subset=["date"]).copy()
+            df.sort_values(by="date", ascending=True, inplace=True)
+            df.reset_index(drop=True, inplace=True)
+
+        try:
+            meta = self._fetch_stock_meta_from_tushare_proxy(symbol) if self.tushare_base_url and self.tushare_token else {}
+            df["name"] = meta.get("name", "")
+            df["list_date"] = meta.get("list_date", "")
+            df["delist_date"] = meta.get("delist_date", "")
+        except Exception:
+            if "name" not in df.columns:
+                df["name"] = ""
+            if "list_date" not in df.columns:
+                df["list_date"] = ""
+            if "delist_date" not in df.columns:
+                df["delist_date"] = ""
+
+        for col in ["amplitude", "turnover", "name", "list_date", "delist_date"]:
+            if col not in df.columns:
+                df[col] = ""
+
+        return df
+
+    def _download_range_data(self, symbol: str, start_date: str, end_date: str) -> tuple[pd.DataFrame, str]:
+        """拉取指定区间数据，返回 df 和数据来源"""
+        if start_date > end_date:
+            return pd.DataFrame(), "cache"
+
+        # 先尝试 Tushare HTTP 代理
+        if self.tushare_base_url and self.tushare_token:
+            try:
+                print(f"🌐 [DataCenter] 正在从 Tushare 代理下载数据: {symbol} {start_date}-{end_date}...")
+                df = self._fetch_from_tushare_proxy(symbol, start_date=start_date, end_date=end_date)
+                if not df.empty:
+                    df.attrs["data_source"] = "tushare"
+                    return df, "tushare"
+                print(f"⚠️ [DataCenter] Tushare 返回空数据，切换到 AKShare: {symbol}")
+            except Exception as e:
+                print(f"⚠️ [DataCenter] Tushare 获取失败，切换到 AKShare: {symbol}，原因: {e}")
+
+        # 再走 AKShare
         clean_code = self._clean_symbol(symbol)
-        print(f"🌐 [DataCenter] 正在从东财下载新数据: {symbol}...")
-        
-        cache_file = os.path.join(self.cache_dir, f"{symbol}_{start_date}_{end_date}.parquet")
-        max_retries = 5  
-        df = pd.DataFrame()
-        
+        print(f"🌐 [DataCenter] 正在从东财下载新数据: {symbol} {start_date}-{end_date}...")
+
+        max_retries = 5
+        new_df = pd.DataFrame()
         for attempt in range(max_retries):
             try:
-                df = ak.stock_zh_a_hist(
-                    symbol=clean_code, 
-                    period="daily", 
-                    start_date=start_date, 
-                    end_date=end_date, 
+                new_df = ak.stock_zh_a_hist(
+                    symbol=clean_code,
+                    period="daily",
+                    start_date=start_date,
+                    end_date=end_date,
                     adjust="qfq"
                 )
-                time.sleep(random.uniform(2.5, 5.0)) 
-                break 
-                
+                time.sleep(random.uniform(2.5, 5.0))
+                break
             except Exception as e:
                 if attempt < max_retries - 1:
                     wait_time = (2 ** attempt) + random.uniform(1.0, 3.0)
@@ -79,15 +357,293 @@ class DataCenter:
                 else:
                     raise RuntimeError(f"❌ 下载 {symbol} 失败，已达最大重试次数。错误: {e}")
 
+        if new_df.empty:
+            return pd.DataFrame(), "remote"
+
+        new_df.rename(columns=self.columns_map, inplace=True)
+        new_df["date"] = pd.to_datetime(new_df["date"], errors="coerce")
+        new_df = new_df.dropna(subset=["date"]).copy()
+        new_df.sort_values(by="date", ascending=True, inplace=True)
+        new_df.reset_index(drop=True, inplace=True)
+        new_df.attrs["data_source"] = "remote"
+        return new_df, "remote"
+
+    def has_cached_data(self, symbol: str) -> bool:
+        """判断本地是否已有该股票的任意缓存文件"""
+        if self._get_cache_record(symbol) is not None:
+            return True
+        search_pattern = os.path.join(self.cache_dir, f"{symbol}_*.parquet")
+        return len(glob.glob(search_pattern)) > 0
+
+    def _cache_covers_range(self, cache_file: str, start_date: str, end_date: str) -> bool:
+        """判断缓存文件名是否覆盖请求区间"""
+        base = os.path.basename(cache_file).replace('.parquet', '')
+        parts = base.split('_')
+        if len(parts) < 3:
+            return False
+        cache_start = parts[-2]
+        cache_end = parts[-1]
+        return cache_start <= start_date and cache_end >= end_date
+
+    def get_latest_trade_date(self) -> str:
+        """直接返回今天日期，作为默认回测结束日"""
+        latest = datetime.now().strftime("%Y%m%d")
+        print(f"🔎 [DataCenter] 最新交易日使用 today_date: {latest}")
+        return latest
+
+    def _normalize_tushare_daily(self, df: pd.DataFrame) -> pd.DataFrame:
+        """将 Tushare 返回字段统一成本项目使用的字段格式"""
         if df.empty:
-            raise ValueError(f"⚠️ {symbol} 返回数据为空，可能退市或停牌。")
+            return df
 
-        df.rename(columns=self.columns_map, inplace=True)
-        df['date'] = pd.to_datetime(df['date'])
-        df.sort_values(by='date', ascending=True, inplace=True)
+        rename_map = {
+            "trade_date": "date",
+            "ts_code": "ts_code",
+            "open": "open",
+            "high": "high",
+            "low": "low",
+            "close": "close",
+            "pre_close": "pre_close",
+            "change": "change_amount",
+            "pct_chg": "pct_change",
+            "vol": "volume",
+            "amount": "amount",
+        }
+
+        df = df.rename(columns=rename_map)
+
+        if "date" in df.columns:
+            df["date"] = pd.to_datetime(df["date"], format="%Y%m%d", errors="coerce")
+
+        # 保证后续回测需要的列都存在
+        required_columns = [
+            "date", "open", "close", "high", "low", "volume",
+            "amount", "amplitude", "pct_change", "change_amount", "turnover"
+        ]
+        for col in required_columns:
+            if col not in df.columns:
+                df[col] = pd.NA
+
+        # 排序并清理
+        df.sort_values(by="date", ascending=True, inplace=True)
         df.reset_index(drop=True, inplace=True)
+        return df
 
-        df.to_parquet(cache_file, index=False)
-        print(f"✅ [DataCenter] 数据下载并缓存成功: {symbol}")
+    def _tushare_post(self, api_name: str, params: dict, fields: str | None = None) -> dict:
+        """通过 HTTP 代理请求 Tushare 接口"""
+        if not self.tushare_base_url or not self.tushare_token:
+            raise RuntimeError("Tushare 配置未启用")
+
+        payload = {
+            "api_name": api_name,
+            "token": self.tushare_token,
+            "params": params,
+        }
+        if fields:
+            payload["fields"] = fields
+
+        request = urllib.request.Request(
+            self.tushare_base_url,
+            data=json.dumps(payload).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+
+        with urllib.request.urlopen(request, timeout=20) as response:
+            raw = response.read().decode("utf-8")
+
+        data = json.loads(raw)
+        if data.get("code") not in (0, "0", None):
+            raise RuntimeError(f"Tushare 返回错误: {data.get('msg', data.get('code'))}")
+        return data
+
+    def _fetch_stock_meta_from_tushare_proxy(self, symbol: str) -> dict:
+        """尽量从 Tushare 代理拉取股票元信息，用于名称 / 上市日期 / 退市日期判断"""
+        ts_code = self._to_ts_code(symbol)
+        if ts_code in self._stock_meta_cache:
+            return self._stock_meta_cache[ts_code]
+
+        data = self._tushare_post(
+            "stock_basic",
+            params={"list_status": "L"},
+            fields="ts_code,name,list_date,delist_date",
+        )
+        table = data.get("data") or {}
+        fields = table.get("fields") or []
+        items = table.get("items") or []
+        if not fields or not items:
+            return {}
+
+        df = pd.DataFrame(items, columns=fields)
+        if "ts_code" not in df.columns:
+            return {}
+
+        for _, row in df.iterrows():
+            code = str(row.get("ts_code", ""))
+            name = str(row.get("name", "") or "")
+            list_date = str(row.get("list_date", "") or "")
+            delist_date = row.get("delist_date", "")
+            if pd.isna(delist_date):
+                delist_date = ""
+            self._stock_meta_cache[code] = {
+                "name": name,
+                "list_date": list_date,
+                "delist_date": str(delist_date or ""),
+            }
+
+        return self._stock_meta_cache.get(ts_code, {})
+
+    def _fetch_from_tushare_proxy(self, symbol: str, start_date: str, end_date: str) -> pd.DataFrame:
+        """通过 HTTP 代理拉取 Tushare 日线数据"""
+        if not self.tushare_base_url or not self.tushare_token:
+            raise RuntimeError("Tushare 配置未启用")
+
+        ts_code = self._to_ts_code(symbol)
+        data = self._tushare_post(
+            "daily",
+            params={
+                "ts_code": ts_code,
+                "start_date": start_date,
+                "end_date": end_date,
+            },
+        )
+
+        table = data.get("data") or {}
+        fields = table.get("fields") or []
+        items = table.get("items") or []
+
+        if not fields or not items:
+            return pd.DataFrame()
+
+        df = pd.DataFrame(items, columns=fields)
+        df = self._normalize_tushare_daily(df)
+
+        try:
+            meta = self._fetch_stock_meta_from_tushare_proxy(symbol)
+            df["name"] = meta.get("name", "")
+            df["list_date"] = meta.get("list_date", "")
+            df["delist_date"] = meta.get("delist_date", "")
+        except Exception:
+            df["name"] = ""
+            df["list_date"] = ""
+            df["delist_date"] = ""
 
         return df
+
+    def fetch_stock_data(
+        self,
+        symbol: str,
+        start_date: str = "20240101",
+        end_date: str = "20260421",
+        force_update: bool = False,
+    ) -> pd.DataFrame:
+        """获取股票数据：索引优先、缺口补齐、主缓存写回"""
+        main_cache_record = self._get_cache_record(symbol)
+        main_cache_file = os.path.join(self.cache_dir, f"{symbol}.parquet")
+        cache_miss_note = ""
+
+        # 1) 如果有主缓存且覆盖请求区间，直接读主缓存
+        if not force_update and main_cache_record and os.path.exists(main_cache_record["file_path"]):
+            cache_start = main_cache_record.get("start_date", "00000000")
+            cache_end = main_cache_record.get("end_date", "00000000")
+            if cache_start <= start_date and cache_end >= end_date:
+                print(f"📦 [DataCenter] 命中主缓存: {os.path.basename(main_cache_record['file_path'])}")
+                df = self._load_cache_df(main_cache_record["file_path"])
+                mask = (df['date'] >= pd.to_datetime(start_date)) & (df['date'] <= pd.to_datetime(end_date))
+                out = df.loc[mask].copy().reset_index(drop=True)
+                out.attrs["data_source"] = "cache"
+                return out
+
+        base_df = pd.DataFrame()
+        fetch_segments = []
+        source_tags = []
+
+        # 2) 若主缓存存在但不完整，只计算缺失区间
+        if not force_update and main_cache_record and os.path.exists(main_cache_record["file_path"]):
+            print(f"⚠️ [DataCenter] 主缓存未覆盖请求区间，尝试补齐: {symbol}")
+            base_df = self._load_cache_df(main_cache_record["file_path"])
+            if not base_df.empty and "date" in base_df.columns:
+                try:
+                    base_min_date = base_df["date"].min()
+                    base_max_date = base_df["date"].max()
+                    req_start = pd.to_datetime(start_date)
+                    req_end = pd.to_datetime(end_date)
+                    if pd.notna(base_min_date) and req_start < base_min_date:
+                        left_end = (pd.Timestamp(base_min_date) - pd.Timedelta(days=1)).strftime("%Y%m%d")
+                        if start_date <= left_end:
+                            fetch_segments.append((start_date, left_end))
+                    if pd.notna(base_max_date) and req_end > base_max_date:
+                        right_start = (pd.Timestamp(base_max_date) + pd.Timedelta(days=1)).strftime("%Y%m%d")
+                        if right_start <= end_date:
+                            fetch_segments.append((right_start, end_date))
+                    if fetch_segments:
+                        cache_miss_note = "缓存未覆盖区间，自动拉远端"
+                except Exception:
+                    fetch_segments = [(start_date, end_date)]
+                    cache_miss_note = "缓存未覆盖区间，自动拉远端"
+            else:
+                fetch_segments = [(start_date, end_date)]
+                cache_miss_note = "缓存未覆盖区间，自动拉远端"
+        else:
+            fetch_segments = [(start_date, end_date)]
+            if main_cache_record:
+                cache_miss_note = "缓存未覆盖区间，自动拉远端"
+
+        # 3) 拉取缺失区间并拼接
+        fetched_frames = []
+        fetch_sources = []
+        for seg_start, seg_end in fetch_segments:
+            if seg_start > seg_end:
+                continue
+            seg_df, seg_source = self._download_range_data(symbol, seg_start, seg_end)
+            if not seg_df.empty:
+                fetched_frames.append(seg_df)
+                fetch_sources.append(seg_source)
+                source_tags.append(seg_source)
+
+        new_df = pd.DataFrame()
+        if fetched_frames:
+            new_df = pd.concat(fetched_frames, ignore_index=True, sort=False)
+            new_df = self._normalize_and_enrich(new_df, symbol)
+        else:
+            # 完全没有缺口但又需要刷新时，拉整段
+            if force_update or main_cache_record is None:
+                new_df, seg_source = self._download_range_data(symbol, start_date, end_date)
+                if not new_df.empty:
+                    new_df = self._normalize_and_enrich(new_df, symbol)
+                    fetch_sources.append(seg_source)
+                    source_tags.append(seg_source)
+
+        if new_df.empty and base_df.empty:
+            raise ValueError(f"⚠️ {symbol} 缓存与远端均未返回有效数据。")
+
+        # 4) 合并旧缓存 + 新数据
+        merged_df = self._merge_cache_frames(base_df, new_df)
+        merged_df = self._normalize_and_enrich(merged_df, symbol)
+        if merged_df.empty:
+            raise ValueError(f"⚠️ {symbol} 缓存与远端均未返回有效数据。")
+
+        # 5) 写回单票主缓存
+        merged_start = merged_df['date'].min().strftime('%Y%m%d')
+        merged_end = merged_df['date'].max().strftime('%Y%m%d')
+        final_source = fetch_sources[0] if fetch_sources else (main_cache_record.get("data_source", "cache") if main_cache_record else "cache")
+        if base_df is not None and not base_df.empty and fetch_sources:
+            final_source = "cache_plus_remote"
+        elif final_source in ("tushare", "remote") and base_df is not None and not base_df.empty:
+            final_source = f"cache_plus_{final_source}"
+        self._write_main_cache(
+            symbol=symbol,
+            df=merged_df,
+            start_date=merged_start,
+            end_date=merged_end,
+            data_source=final_source,
+            remark=cache_miss_note,
+        )
+
+        # 6) 返回请求区间切片
+        mask = (merged_df['date'] >= pd.to_datetime(start_date)) & (merged_df['date'] <= pd.to_datetime(end_date))
+        out = merged_df.loc[mask].copy().reset_index(drop=True)
+        out.attrs["data_source"] = final_source
+        if cache_miss_note:
+            out.attrs["fetch_note"] = cache_miss_note
+        return out

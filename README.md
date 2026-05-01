@@ -30,6 +30,17 @@ Quant Simulate System (A 股量化回测与时空推演沙盘)
 
 建议使用虚拟环境运行本项目。
 
+如果你想避免手工后台拉起进程，可以直接使用项目自带的一键脚本：
+
+```bash
+./scripts/backend_ctl.sh start
+./scripts/backend_ctl.sh status
+./scripts/backend_ctl.sh logs
+./scripts/backend_ctl.sh stop
+```
+
+脚本会把后端 PID 写到 `.run/backend.pid`，日志写到 `logs/backend.log`。
+
 1. 克隆项目到本地
 git clone https://github.com/你的用户名/quant_simulate_system.git
 cd quant_simulate_system
@@ -62,6 +73,19 @@ npm run dev
 
 # 配置指南 (config.yaml)
 系统的运行高度依赖于项目根目录下的 config.yaml 配置文件。你无需修改代码，只需调整配置即可完成策略回测。
+
+# 可选数据源：Tushare HTTP 代理
+如果你希望优先使用 Tushare 代理服务、降低东财防爬对首页总览的影响，可在根目录 `config.yaml` 中启用：
+
+```yaml
+data_source:
+  tushare:
+    enabled: true
+    base_url: "https://tushare.data.godscode.com.cn/"
+    token: "你的 token"
+```
+
+启用后，数据中心会优先尝试 Tushare 代理；若失败，再回退到 AKShare。
 ![alt text](image_2.png)
 
 配置项详解
