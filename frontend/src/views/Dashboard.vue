@@ -46,6 +46,20 @@
           </template>
         </el-table-column>
         <el-table-column prop="trade_count" label="交易次数" min-width="100" />
+        <el-table-column label="今日交易" min-width="160">
+          <template #default="scope">
+            <span v-if="!scope.row.today_trades?.length" class="muted">—</span>
+            <span v-else>
+              <span
+                v-for="(t, idx) in scope.row.today_trades"
+                :key="idx"
+                :class="['trade-tag', t.action === '买入' ? 'buy' : 'sell']"
+              >
+                {{ t.action === '买入' ? '🟢' : '🔴' }}{{ t.action }} {{ t.price }}
+              </span>
+            </span>
+          </template>
+        </el-table-column>
         <el-table-column label="操作" min-width="120">
           <template #default>
             <el-button size="small">详情下钻</el-button>
@@ -209,6 +223,10 @@ onMounted(async () => {
 :deep(.el-table .el-table__body .el-table__row:hover > td) { background: #222836 !important; }
 :deep(.el-table__empty-block), :deep(.el-table__empty-text) { background: #1a1e29 !important; color: #8a919e !important; }
 :deep(.el-table__row) { cursor: pointer; }
+.trade-tag { display: inline-block; margin-right: 6px; font-size: 12px; font-weight: 600; white-space: nowrap; }
+.trade-tag.buy { color: #0ECB81; }
+.trade-tag.sell { color: #F6465D; }
+.muted { color: #8a919e; }
 :deep(.el-table .cell) { white-space: nowrap; }
 :deep(.el-table__header th .cell) { white-space: nowrap; }
 </style>

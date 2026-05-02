@@ -209,7 +209,8 @@ class BacktestEngine:
             "sharpe_ratio": round(sharpe, 2),
             "win_rate": round(win_rate * 100, 2),
             "pnl_ratio": round(pnl_ratio, 2),
-            "trade_count": len(trade_returns)
+            "trade_count": len(trade_returns),
+            "closed_trade_count": len(trade_returns)
         }
 
     def _add_log(self, date, ticker, action, price, shares, fee, reason, signal_date=None, execution_date=None):

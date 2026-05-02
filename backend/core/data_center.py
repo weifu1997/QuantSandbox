@@ -37,6 +37,10 @@ class DataCenter:
         self._load_tushare_config()
         print(f"🔧 [DataCenter] Tushare enabled={bool(self.tushare_base_url and self.tushare_token)} base_url={self.tushare_base_url or 'EMPTY'}")
         self._stock_meta_cache = {}
+        self._source_fail_state = {
+            "tushare": {"fail_count": 0, "cooldown_until": 0.0},
+            "akshare": {"fail_count": 0, "cooldown_until": 0.0},
+        }
         self.cache_index_db = os.path.join(self.cache_dir, "cache_index.sqlite")
         self._init_cache_index_db()
         self.migrate_legacy_cache_files()
@@ -315,25 +319,49 @@ class DataCenter:
 
         return df
 
+    def _mark_source_success(self, source: str):
+        state = self._source_fail_state.setdefault(source, {"fail_count": 0, "cooldown_until": 0.0})
+        state["fail_count"] = 0
+        state["cooldown_until"] = 0.0
+
+    def _mark_source_failure(self, source: str, cooldown_seconds: int = 120):
+        state = self._source_fail_state.setdefault(source, {"fail_count": 0, "cooldown_until": 0.0})
+        state["fail_count"] = int(state.get("fail_count", 0)) + 1
+        if state["fail_count"] >= 3:
+            state["cooldown_until"] = time.time() + cooldown_seconds
+            print(f"⚠️ [DataCenter] {source} 进入冷却期 {cooldown_seconds}s")
+
+    def _source_in_cooldown(self, source: str) -> bool:
+        state = self._source_fail_state.setdefault(source, {"fail_count": 0, "cooldown_until": 0.0})
+        return time.time() < float(state.get("cooldown_until", 0.0))
+
     def _download_range_data(self, symbol: str, start_date: str, end_date: str) -> tuple[pd.DataFrame, str]:
         """拉取指定区间数据，返回 df 和数据来源"""
         if start_date > end_date:
             return pd.DataFrame(), "cache"
 
         # 先尝试 Tushare HTTP 代理
-        if self.tushare_base_url and self.tushare_token:
+        if self.tushare_base_url and self.tushare_token and not self._source_in_cooldown("tushare"):
             try:
                 print(f"🌐 [DataCenter] 正在从 Tushare 代理下载数据: {symbol} {start_date}-{end_date}...")
                 df = self._fetch_from_tushare_proxy(symbol, start_date=start_date, end_date=end_date)
                 if not df.empty:
+                    self._mark_source_success("tushare")
                     df.attrs["data_source"] = "tushare"
                     return df, "tushare"
+                self._mark_source_failure("tushare")
                 print(f"⚠️ [DataCenter] Tushare 返回空数据，切换到 AKShare: {symbol}")
             except Exception as e:
+                self._mark_source_failure("tushare")
                 print(f"⚠️ [DataCenter] Tushare 获取失败，切换到 AKShare: {symbol}，原因: {e}")
+        elif self.tushare_base_url and self.tushare_token:
+            print(f"⚠️ [DataCenter] Tushare 冷却中，跳过本次请求: {symbol}")
 
         # 再走 AKShare
         clean_code = self._clean_symbol(symbol)
+        if self._source_in_cooldown("akshare"):
+            print(f"⚠️ [DataCenter] AKShare 冷却中，跳过本次请求: {symbol}")
+            return pd.DataFrame(), "remote"
         print(f"🌐 [DataCenter] 正在从东财下载新数据: {symbol} {start_date}-{end_date}...")
 
         max_retries = 5
@@ -355,11 +383,14 @@ class DataCenter:
                     print(f"⚠️ 触发防爬限制。等待 {wait_time:.2f} 秒后进行第 {attempt + 1} 次重试...")
                     time.sleep(wait_time)
                 else:
+                    self._mark_source_failure("akshare")
                     raise RuntimeError(f"❌ 下载 {symbol} 失败，已达最大重试次数。错误: {e}")
 
         if new_df.empty:
+            self._mark_source_failure("akshare")
             return pd.DataFrame(), "remote"
 
+        self._mark_source_success("akshare")
         new_df.rename(columns=self.columns_map, inplace=True)
         new_df["date"] = pd.to_datetime(new_df["date"], errors="coerce")
         new_df = new_df.dropna(subset=["date"]).copy()

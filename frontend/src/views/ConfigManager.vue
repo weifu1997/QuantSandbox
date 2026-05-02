@@ -123,27 +123,6 @@ const strategyMeta = {
     ],
     defaults: { window: 14, buy_threshold: 30, sell_threshold: 70 },
   },
-  quality_trend_breakout: {
-    label: 'quality_trend_breakout 强势突破回踩',
-    fields: [
-      { key: 'ma_long', label: '长均线周期', desc: '长期趋势均线', type: 'number', min: 60, step: 1 },
-      { key: 'ma_mid', label: '中均线周期', desc: '中期突破参考均线', type: 'number', min: 20, step: 1 },
-      { key: 'breakout_window', label: '突破窗口', desc: '最近高点回看周期', type: 'number', min: 5, step: 1 },
-      { key: 'pullback_band', label: '回踩带宽', desc: '突破位附近容忍区间', type: 'number', min: 0.01, step: 0.01 },
-      { key: 'rsi_window', label: 'RSI 窗口', desc: 'RSI 计算周期', type: 'number', min: 5, step: 1 },
-      { key: 'rsi_upper', label: 'RSI 上限', desc: '过热前的上限阈值', type: 'number', min: 1, step: 1 },
-      { key: 'volume_ma_window', label: '量能窗口', desc: '成交量均线周期', type: 'number', min: 5, step: 1 },
-      { key: 'volume_ratio_floor', label: '量能下限', desc: '不低于量能均线比例', type: 'number', min: 0.1, step: 0.1 },
-      { key: 'momentum_window', label: '动量回看', desc: '动量计算周期', type: 'number', min: 1, step: 1 },
-      { key: 'breakout_confirm_days', label: '突破确认天数', desc: '突破位上方站稳天数', type: 'number', min: 1, step: 1 },
-      { key: 'momentum_floor', label: '动量门槛', desc: '5日涨幅最低要求', type: 'number', min: 0.01, step: 0.01 },
-      { key: 'stop_loss', label: '止损比例', desc: '买入后最大亏损', type: 'number', min: 0.01, step: 0.01 },
-      { key: 'profit_activation', label: '盈利激活', desc: '达到后启用追踪止损', type: 'number', min: 0.01, step: 0.01 },
-      { key: 'trail_stop', label: '追踪止损', desc: '从峰值回撤触发退出', type: 'number', min: 0.01, step: 0.01 },
-      { key: 'max_hold_days', label: '最大持有天数', desc: '超时强制退出', type: 'number', min: 1, step: 1 },
-    ],
-    defaults: { ma_long: 250, ma_mid: 60, breakout_window: 20, pullback_band: 0.03, rsi_window: 14, rsi_upper: 70, volume_ma_window: 20, volume_ratio_floor: 0.8, momentum_window: 5, breakout_confirm_days: 2, momentum_floor: 0.02, stop_loss: 0.07, profit_activation: 0.10, trail_stop: 0.06, max_hold_days: 45 },
-  },
 };
 
 const currentStrategy = computed(() => strategyMeta[strategyName.value] || strategyMeta.dual_ma);
@@ -172,8 +151,8 @@ const loadConfig = async () => {
     const res = await getConfig();
     stockPool.value = Array.isArray(res.data.stock_pool) ? [...res.data.stock_pool] : [];
     stockPoolText.value = stockPool.value.join('\n');
-    strategyName.value = res.data.strategy?.name || 'dual_ma';
-    strategyParams.value = { ...currentStrategy.value.defaults, ...(res.data.strategy?.parameters || {}) };
+    strategyName.value = strategyMeta[res.data.strategy?.name] ? res.data.strategy.name : 'dual_ma';
+    strategyParams.value = { ...(strategyMeta[res.data.strategy?.name] || strategyMeta.dual_ma).defaults, ...(res.data.strategy?.parameters || {}) };
   } catch (e) {
     ElMessage.error('读取配置失败');
     console.error(e);

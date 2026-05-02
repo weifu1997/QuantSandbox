@@ -6,7 +6,6 @@ from backend.core.strategy_common import board_limit_ratio
 from backend.core.strategies.dual_ma import DualMaStrategy
 from backend.core.strategies.bollinger_bands import BollingerBandsStrategy
 from backend.core.strategies.rsi_reversal import RsiReversalStrategy
-from backend.core.strategies.quality_trend_breakout import QualityTrendBreakoutStrategy
 
 
 class StrategyFactory:
@@ -23,8 +22,6 @@ class StrategyFactory:
             result = BollingerBandsStrategy.generate(df, params)
         elif strategy_name == "rsi_reversal":
             result = RsiReversalStrategy.generate(df, params)
-        elif strategy_name == "quality_trend_breakout":
-            result = QualityTrendBreakoutStrategy.generate(df, params)
         else:
             raise ValueError(f"未知的策略名称: {strategy_name}")
 

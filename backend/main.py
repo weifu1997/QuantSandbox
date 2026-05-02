@@ -4,7 +4,7 @@ import tempfile
 import yaml
 import pandas as pd
 from pydantic import BaseModel
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 
 from backend.core.data_center import DataCenter
@@ -81,12 +81,6 @@ def save_config(config: dict):
         if os.path.exists(tmp_path):
             os.remove(tmp_path)
 
-
-class ConfigUpdateRequest(BaseModel):
-    stock_pool: list[str] | None = None
-    strategy_name: str | None = None
-    strategy_parameters: dict | None = None
-
 @app.get("/api/meta", summary="获取系统元信息")
 def get_meta():
     latest_trade_date = dc.get_latest_trade_date()
@@ -103,8 +97,51 @@ async def fetch_stock_data_with_timeout(symbol: str, start_date: str, end_date: 
         timeout=timeout,
     )
 
+
+def _extract_today_trades(logs: list[dict], end_date: str) -> list[dict]:
+    today_str = f"{end_date[:4]}-{end_date[4:6]}-{end_date[6:8]}"
+    return [
+        {"action": l.get("action"), "price": l.get("price"), "shares": l.get("shares")}
+        for l in logs
+        if str(l.get("execution_date", "")).startswith(today_str)
+    ]
+
+
+def _build_detail_result(config: dict, ticker: str, df_signals: pd.DataFrame, start_date: str, end_date: str, stock_name: str, data_source: str, fetch_note: str = ""):
+    mask = (df_signals['date'] >= pd.to_datetime(start_date)) & (df_signals['date'] <= pd.to_datetime(end_date))
+    df_slice = df_signals.loc[mask].copy().reset_index(drop=True)
+    if df_slice.empty:
+        raise ValueError("该时间区间内没有交易数据")
+
+    engine = BacktestEngine(
+        initial_cash=config['account']['initial_cash'],
+        commission_rate=config['account']['commission_rate'],
+        tax_rate=config['account']['tax_rate']
+    )
+    res = engine.run(df_slice, ticker)
+    res['data']['date'] = res['data']['date'].dt.strftime('%Y-%m-%d')
+    logs = res.get('logs', [])
+    return {
+        "status": "success",
+        "name": stock_name,
+        "metadata": res['metadata'],
+        "klines": clean_nan(res['data']),
+        "logs": logs,
+        "today_trades": _extract_today_trades(logs, end_date),
+        "data_source": data_source,
+        **({"fetch_note": fetch_note} if fetch_note else {}),
+    }
+
+
+def _run_collect_in_background(coro_factory):
+    try:
+        asyncio.run(coro_factory())
+    except Exception as e:
+        print(f"⚠️ 后台补齐任务失败: {e}")
+
+
 @app.get("/api/summary", summary="获取大盘总览数据")
-async def get_summary(start_date: str = "20240101", end_date: str = "20240201"):
+async def get_summary(background_tasks: BackgroundTasks, start_date: str = "20240101", end_date: str = "20240201"):
     config = load_config()
     pool = config['stock_pool']
 
@@ -130,6 +167,13 @@ async def get_summary(start_date: str = "20240101", end_date: str = "20240201"):
         )
         res = engine.run(df_slice, ticker)
         meta = res['metadata']
+        logs = res.get('logs', [])
+        today_str = f"{end_date[:4]}-{end_date[4:6]}-{end_date[6:8]}"
+        today_trades = [
+            {"action": l['action'], "price": l['price'], "shares": l['shares']}
+            for l in logs
+            if str(l.get('execution_date', '')).startswith(today_str)
+        ]
         return {
             "ticker": ticker,
             "name": stock_name,
@@ -139,6 +183,7 @@ async def get_summary(start_date: str = "20240101", end_date: str = "20240201"):
             "trade_count": meta['trade_count'],
             "data_source": data_source,
             "fetch_note": fetch_note,
+            "today_trades": today_trades,
         }
 
     async def _process_cached(ticker: str):
@@ -192,7 +237,7 @@ async def get_summary(start_date: str = "20240101", end_date: str = "20240201"):
     cached_rows, cached_pending = await _collect(cached_tickers, 8, _process_cached)
     if cached_rows:
         if cold_tickers:
-            asyncio.create_task(_collect(cold_tickers, 6, _process_remote))
+            background_tasks.add_task(_run_collect_in_background, lambda: _collect(cold_tickers, 6, _process_remote))
         return {
             "status": "success",
             "data": cached_rows,
@@ -266,70 +311,43 @@ async def get_detail(ticker: str, start_date: str = "20240101", end_date: str = 
         if cache_record and os.path.exists(cache_record["file_path"]):
             cached_data = dc._load_cache_df(cache_record["file_path"])
             if not cached_data.empty:
-                stock_name = ""
-                if "name" in cached_data.columns:
-                    stock_name = str(cached_data["name"].iloc[0] or "")
-
+                stock_name = str(cached_data["name"].iloc[0] or "") if "name" in cached_data.columns else ""
                 effective_end = min(end_date, cache_record.get("end_date", end_date))
                 df_signals = StrategyFactory.generate_signals(
                     cached_data,
                     config['strategy']['name'],
                     config['strategy']['parameters']
                 )
-                mask = (df_signals['date'] >= pd.to_datetime(start_date)) &                        (df_signals['date'] <= pd.to_datetime(effective_end))
-                df_slice = df_signals.loc[mask].copy().reset_index(drop=True)
-                if not df_slice.empty:
-                    engine = BacktestEngine(
-                        initial_cash=config['account']['initial_cash'],
-                        commission_rate=config['account']['commission_rate'],
-                        tax_rate=config['account']['tax_rate']
-                    )
-                    res = engine.run(df_slice, ticker)
-                    res['data']['date'] = res['data']['date'].dt.strftime('%Y-%m-%d')
-                    return {
-                        "status": "success",
-                        "name": stock_name,
-                        "metadata": res['metadata'],
-                        "klines": clean_nan(res['data']),
-                        "logs": res['logs'],
-                        "data_source": "cache",
-                    }
+                return _build_detail_result(
+                    config=config,
+                    ticker=ticker,
+                    df_signals=df_signals,
+                    start_date=start_date,
+                    end_date=effective_end,
+                    stock_name=stock_name,
+                    data_source="cache",
+                    fetch_note="",
+                )
 
         raw_data = await fetch_stock_data_with_timeout(ticker, start_date="20230101", end_date=end_date, timeout=10)
 
-        stock_name = ""
-        if not raw_data.empty and "name" in raw_data.columns:
-            stock_name = str(raw_data["name"].iloc[0] or "")
-
+        stock_name = str(raw_data["name"].iloc[0] or "") if (not raw_data.empty and "name" in raw_data.columns) else ""
         df_signals = StrategyFactory.generate_signals(
             raw_data,
             config['strategy']['name'],
             config['strategy']['parameters']
         )
 
-        mask = (df_signals['date'] >= pd.to_datetime(start_date)) &                (df_signals['date'] <= pd.to_datetime(end_date))
-        df_slice = df_signals.loc[mask].copy().reset_index(drop=True)
-
-        if df_slice.empty:
-            raise ValueError("该时间区间内没有交易数据")
-
-        engine = BacktestEngine(
-            initial_cash=config['account']['initial_cash'],
-            commission_rate=config['account']['commission_rate'],
-            tax_rate=config['account']['tax_rate']
+        return _build_detail_result(
+            config=config,
+            ticker=ticker,
+            df_signals=df_signals,
+            start_date=start_date,
+            end_date=end_date,
+            stock_name=stock_name,
+            data_source=raw_data.attrs.get("data_source", "remote") if hasattr(raw_data, "attrs") else "remote",
+            fetch_note=raw_data.attrs.get("fetch_note", "") if hasattr(raw_data, "attrs") else "",
         )
-        res = engine.run(df_slice, ticker)
-
-        res['data']['date'] = res['data']['date'].dt.strftime('%Y-%m-%d')
-
-        return {
-            "status": "success",
-            "name": stock_name,
-            "metadata": res['metadata'],
-            "klines": clean_nan(res['data']),
-            "logs": res['logs'],
-            "data_source": raw_data.attrs.get("data_source", "remote") if hasattr(raw_data, "attrs") else "remote",
-        }
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
