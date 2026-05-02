@@ -22,3 +22,6 @@ data/cache/
 # 5. 运行时文件
 .run/
 logs/
+
+# 6. 本地真实配置
+config.yaml
