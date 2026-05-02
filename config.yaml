@@ -19,10 +19,10 @@ data_source:
   tickflow:
     enabled: true
     base_url: https://api.tickflow.org
-    api_key: tk_68aafcfe09c84a33a35571bd5e16732f
+    api_key: xxxx
   tushare:
     base_url: https://tushare.data.godscode.com.cn/
-    token: ds_6P7_X9G2NPmOb4WKo4qvIO42-22X3lpX
+    token: xxxx
     enabled: true
   akshare:
     enabled: true
