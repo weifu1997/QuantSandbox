@@ -87,7 +87,8 @@ def get_meta():
     return {
         "status": "success",
         "latest_trade_date": latest_trade_date,
-        "data_source_enabled": bool(getattr(dc, "tushare_base_url", "") and getattr(dc, "tushare_token", "")),
+        "data_sources": dc.get_source_status(),
+        "priority": dc.get_source_priority(),
     }
 
 async def fetch_stock_data_with_timeout(symbol: str, start_date: str, end_date: str, timeout: int = 20):
@@ -253,7 +254,7 @@ async def get_summary(background_tasks: BackgroundTasks, start_date: str = "2024
                 continue
         return rows, bool(pending)
 
-    cached_rows, cached_pending = await _collect(cached_tickers, 8, _process_cached)
+    cached_rows, cached_pending = await _collect(cached_tickers, 20, _process_cached)
     if cached_rows:
         if cold_tickers:
             background_tasks.add_task(_run_collect_in_background, lambda: _collect(cold_tickers, 6, _process_remote))

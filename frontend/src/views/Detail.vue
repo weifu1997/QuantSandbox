@@ -66,6 +66,8 @@ const route = useRoute();
 
 const loading = ref(true);
 const metadata = ref({});
+const resolveStockName = (data, ticker) => String(data?.display_name || data?.name || ticker || '').trim();
+
 const stockName = ref('');
 
 // 🌟 核心引擎内存：存放后端的全量数据
@@ -146,7 +148,7 @@ const initChartAndData = async () => {
     const res = await getStockDetail(props.ticker, start, end);
     const data = res.data;
     metadata.value = data.metadata;
-    stockName.value = data.name || '';
+    stockName.value = resolveStockName(data, props.ticker);
     fullLogs = (data.logs || []).map(log => ({
       ...log,
       signal_date: log.signal_date || log.timestamp,

@@ -7,10 +7,13 @@ import sqlite3
 import hashlib
 import urllib.request
 import urllib.error
+import urllib.parse
+import requests
 import pandas as pd
 import akshare as ak
 import yaml
 from datetime import datetime
+from typing import Any
 
 
 class DataCenter:
@@ -31,40 +34,51 @@ class DataCenter:
             "涨跌额": "change_amount", "换手率": "turnover"
         }
 
-        # Tushare 代理服务（通过项目配置文件读取）
+        # 数据源配置（通过项目配置文件读取）
+        self.tickflow_base_url = ""
+        self.tickflow_api_key = ""
         self.tushare_base_url = ""
         self.tushare_token = ""
-        self._load_tushare_config()
-        print(f"🔧 [DataCenter] Tushare enabled={bool(self.tushare_base_url and self.tushare_token)} base_url={self.tushare_base_url or 'EMPTY'}")
+        self.akshare_enabled = True
+        self.cache_enabled = True
+        self._load_data_source_config()
+        print(
+            "🔧 [DataCenter] "
+            f"TickFlow enabled={bool(self.tickflow_base_url and self.tickflow_api_key)} base_url={self.tickflow_base_url or 'EMPTY'} | "
+            f"Tushare enabled={bool(self.tushare_base_url and self.tushare_token)} base_url={self.tushare_base_url or 'EMPTY'}"
+        )
         self._stock_meta_cache = {}
         self._source_fail_state = {
-            "tushare": {"fail_count": 0, "cooldown_until": 0.0},
-            "akshare": {"fail_count": 0, "cooldown_until": 0.0},
+            "tickflow": {"fail_count": 0, "cooldown_until": 0.0, "last_error": "", "last_status": ""},
+            "tushare": {"fail_count": 0, "cooldown_until": 0.0, "last_error": "", "last_status": ""},
+            "akshare": {"fail_count": 0, "cooldown_until": 0.0, "last_error": "", "last_status": ""},
         }
         self.cache_index_db = os.path.join(self.cache_dir, "cache_index.sqlite")
         self._init_cache_index_db()
         self.migrate_legacy_cache_files()
 
-    def _load_tushare_config(self):
-        """从项目根 config.yaml 读取 Tushare 配置"""
+    def _load_data_source_config(self):
+        """从项目根 config.yaml 读取数据源配置"""
         config_path = os.path.abspath(os.path.join(self.base_path, "config.yaml"))
         if not os.path.exists(config_path):
             return
         try:
             with open(config_path, "r", encoding="utf-8") as f:
                 config = yaml.safe_load(f) or {}
-            ds = config.get("data_source", {}).get("tushare", {})
-            enabled = bool(ds.get("enabled", False))
-            base_url = str(ds.get("base_url", "")).strip().rstrip("/")
-            token = str(ds.get("token", "")).strip()
-            if enabled and base_url and token:
-                self.tushare_base_url = base_url
-                self.tushare_token = token
-            else:
-                self.tushare_base_url = ""
-                self.tushare_token = ""
+            ds = config.get("data_source", {}) or {}
+
+            tickflow = ds.get("tickflow", {}) or {}
+            self.tickflow_base_url = str(tickflow.get("base_url", "")).strip().rstrip("/") if tickflow.get("enabled", False) else ""
+            self.tickflow_api_key = str(tickflow.get("api_key", "")).strip() if tickflow.get("enabled", False) else ""
+
+            tushare = ds.get("tushare", {}) or {}
+            self.tushare_base_url = str(tushare.get("base_url", "")).strip().rstrip("/") if tushare.get("enabled", False) else ""
+            self.tushare_token = str(tushare.get("token", "")).strip() if tushare.get("enabled", False) else ""
+
+            self.akshare_enabled = bool((ds.get("akshare", {}) or {}).get("enabled", True))
+            self.cache_enabled = bool((ds.get("cache", {}) or {}).get("enabled", True))
         except Exception as e:
-            print(f"⚠️ [DataCenter] 读取 Tushare 配置失败: {e}")
+            print(f"⚠️ [DataCenter] 读取数据源配置失败: {e}")
 
     def _clean_symbol(self, symbol: str) -> str:
         if symbol.startswith(("sh", "sz")):
@@ -109,18 +123,10 @@ class DataCenter:
             except Exception:
                 pass
 
-        local_name_map = {
-            "sz000719": "中原传媒",
-            "sh600483": "福能股份",
-            "sz000883": "湖北能源",
-            "sh601598": "中国外运",
-            "sh600098": "广州发展",
-            "sh600177": "雅戈尔",
-        }
         code = self._clean_ticker_to_code(symbol)
         if code:
             for candidate in (code, code.upper(), code.lower()):
-                name = local_name_map.get(candidate, "")
+                name = self._get_local_stock_name(candidate)
                 if name:
                     return name
 
@@ -327,6 +333,30 @@ class DataCenter:
             merged = merged.sort_values(by="date", ascending=True).reset_index(drop=True)
         return merged
 
+    def _get_local_stock_name(self, code: str) -> str:
+        local_name_map = {
+            "sz000719": "中原传媒",
+            "sh600483": "福能股份",
+            "sz000883": "湖北能源",
+            "sh601598": "中国外运",
+            "sh600098": "广州发展",
+            "sh600177": "雅戈尔",
+        }
+        return local_name_map.get(str(code or "").strip(), "")
+
+    def get_source_status(self) -> dict:
+        return {
+            "tickflow_enabled": bool(self.tickflow_base_url and self.tickflow_api_key),
+            "tushare_enabled": bool(self.tushare_base_url and self.tushare_token),
+            "akshare_enabled": bool(self.akshare_enabled),
+            "cache_enabled": bool(self.cache_enabled),
+            "tickflow_last_error": self._source_fail_state.get("tickflow", {}).get("last_error", ""),
+            "tickflow_last_status": self._source_fail_state.get("tickflow", {}).get("last_status", ""),
+        }
+
+    def get_source_priority(self) -> list[str]:
+        return ["tushare", "tickflow", "akshare", "cache"]
+
     def _normalize_and_enrich(self, df: pd.DataFrame, symbol: str) -> pd.DataFrame:
         """统一清洗、补充字段"""
         if df is None or df.empty:
@@ -343,9 +373,12 @@ class DataCenter:
 
         try:
             meta = self._fetch_stock_meta_from_tushare_proxy(symbol) if self.tushare_base_url and self.tushare_token else {}
-            df["name"] = meta.get("name", "")
-            df["list_date"] = meta.get("list_date", "")
-            df["delist_date"] = meta.get("delist_date", "")
+            if "name" not in df.columns or not str(df.get("name", "").iloc[0] if len(df.index) else "").strip():
+                df["name"] = meta.get("name", df.get("name", ""))
+            if "list_date" not in df.columns:
+                df["list_date"] = meta.get("list_date", "")
+            if "delist_date" not in df.columns:
+                df["delist_date"] = meta.get("delist_date", "")
         except Exception:
             if "name" not in df.columns:
                 df["name"] = ""
@@ -357,31 +390,79 @@ class DataCenter:
         for col in ["amplitude", "turnover", "name", "list_date", "delist_date"]:
             if col not in df.columns:
                 df[col] = ""
+        for col in ["open", "high", "low", "close", "volume", "amount", "pct_change", "change_amount", "pre_close"]:
+            if col not in df.columns:
+                df[col] = pd.NA
 
         return df
 
     def _mark_source_success(self, source: str):
-        state = self._source_fail_state.setdefault(source, {"fail_count": 0, "cooldown_until": 0.0})
+        state = self._source_fail_state.setdefault(source, {"fail_count": 0, "cooldown_until": 0.0, "last_error": "", "last_status": ""})
         state["fail_count"] = 0
         state["cooldown_until"] = 0.0
+        state["last_error"] = ""
+        state["last_status"] = ""
 
-    def _mark_source_failure(self, source: str, cooldown_seconds: int = 120):
-        state = self._source_fail_state.setdefault(source, {"fail_count": 0, "cooldown_until": 0.0})
+    def _mark_source_failure(self, source: str, cooldown_seconds: int = 120, reason: str = "", status: str = ""):
+        state = self._source_fail_state.setdefault(source, {"fail_count": 0, "cooldown_until": 0.0, "last_error": "", "last_status": ""})
         state["fail_count"] = int(state.get("fail_count", 0)) + 1
+        state["last_error"] = str(reason or "")
+        state["last_status"] = str(status or "")
         if state["fail_count"] >= 3:
             state["cooldown_until"] = time.time() + cooldown_seconds
             print(f"⚠️ [DataCenter] {source} 进入冷却期 {cooldown_seconds}s")
 
     def _source_in_cooldown(self, source: str) -> bool:
-        state = self._source_fail_state.setdefault(source, {"fail_count": 0, "cooldown_until": 0.0})
+        state = self._source_fail_state.setdefault(source, {"fail_count": 0, "cooldown_until": 0.0, "last_error": "", "last_status": ""})
         return time.time() < float(state.get("cooldown_until", 0.0))
+
+    def _fetch_from_tickflow(self, symbol: str, start_date: str, end_date: str) -> pd.DataFrame:
+        if not self.tickflow_base_url or not self.tickflow_api_key:
+            raise RuntimeError("TickFlow 配置未启用")
+
+        ts_code = self._to_ts_code(symbol)
+        url = f"{self.tickflow_base_url}/v1/klines?symbol={urllib.parse.quote(ts_code)}&period=1d"
+        response = requests.get(url, headers={"x-api-key": self.tickflow_api_key}, timeout=20)
+        response.raise_for_status()
+        data = response.json()
+        payload = data.get("data") or {}
+        timestamps = payload.get("timestamp") or []
+        if not timestamps:
+            return pd.DataFrame()
+
+        df = pd.DataFrame({
+            "date": pd.to_datetime(timestamps, unit="ms", errors="coerce"),
+            "open": payload.get("open", []),
+            "high": payload.get("high", []),
+            "low": payload.get("low", []),
+            "close": payload.get("close", []),
+            "volume": payload.get("volume", []),
+            "amount": payload.get("amount", []),
+            "pre_close": payload.get("prev_close", [pd.NA] * len(timestamps)),
+        })
+        if "pre_close" in df.columns:
+            try:
+                df["change_amount"] = pd.to_numeric(df["close"], errors="coerce") - pd.to_numeric(df["pre_close"], errors="coerce")
+            except Exception:
+                df["change_amount"] = pd.NA
+            try:
+                pre = pd.to_numeric(df["pre_close"], errors="coerce")
+                close_v = pd.to_numeric(df["close"], errors="coerce")
+                df["pct_change"] = ((close_v - pre) / pre * 100).replace([pd.NA, pd.NaT], pd.NA)
+            except Exception:
+                df["pct_change"] = pd.NA
+        df["name"] = self.get_stock_name(symbol)
+        df["list_date"] = ""
+        df["delist_date"] = ""
+        df = self._normalize_and_enrich(df, symbol)
+        df.attrs["data_source"] = "tickflow"
+        return df
 
     def _download_range_data(self, symbol: str, start_date: str, end_date: str) -> tuple[pd.DataFrame, str]:
         """拉取指定区间数据，返回 df 和数据来源"""
         if start_date > end_date:
             return pd.DataFrame(), "cache"
 
-        # 先尝试 Tushare HTTP 代理
         if self.tushare_base_url and self.tushare_token and not self._source_in_cooldown("tushare"):
             try:
                 print(f"🌐 [DataCenter] 正在从 Tushare 代理下载数据: {symbol} {start_date}-{end_date}...")
@@ -391,14 +472,38 @@ class DataCenter:
                     df.attrs["data_source"] = "tushare"
                     return df, "tushare"
                 self._mark_source_failure("tushare")
-                print(f"⚠️ [DataCenter] Tushare 返回空数据，切换到 AKShare: {symbol}")
+                print(f"⚠️ [DataCenter] Tushare 返回空数据，切换到 TickFlow: {symbol}")
             except Exception as e:
-                self._mark_source_failure("tushare")
-                print(f"⚠️ [DataCenter] Tushare 获取失败，切换到 AKShare: {symbol}，原因: {e}")
+                self._mark_source_failure("tushare", reason=repr(e), status="error")
+                print(f"⚠️ [DataCenter] Tushare 获取失败，切换到 TickFlow: {symbol}，原因: {e}")
         elif self.tushare_base_url and self.tushare_token:
             print(f"⚠️ [DataCenter] Tushare 冷却中，跳过本次请求: {symbol}")
 
-        # 再走 AKShare
+        if self.tickflow_base_url and self.tickflow_api_key and not self._source_in_cooldown("tickflow"):
+            try:
+                print(f"🌐 [DataCenter] 正在从 TickFlow 下载数据: {symbol} {start_date}-{end_date}...")
+                df = self._fetch_from_tickflow(symbol, start_date=start_date, end_date=end_date)
+                if not df.empty:
+                    self._mark_source_success("tickflow")
+                    df.attrs["data_source"] = "tickflow"
+                    return df, "tickflow"
+                self._mark_source_failure("tickflow", reason="TickFlow 返回空数据", status="empty")
+                print(f"⚠️ [DataCenter] TickFlow 返回空数据，切换到 AKShare: {symbol}")
+            except urllib.error.HTTPError as e:
+                reason = f"HTTP {getattr(e, 'code', '')} {getattr(e, 'reason', '')}"
+                if getattr(e, 'code', None) == 403:
+                    reason = "HTTP 403 Forbidden：TickFlow API Key 可能无权限或接口未开通"
+                self._mark_source_failure("tickflow", reason=reason, status=str(getattr(e, 'code', '')))
+                print(f"⚠️ [DataCenter] TickFlow 获取失败，切换到 AKShare: {symbol}，原因: {reason}")
+            except Exception as e:
+                self._mark_source_failure("tickflow", reason=repr(e), status="error")
+                print(f"⚠️ [DataCenter] TickFlow 获取失败，切换到 AKShare: {symbol}，原因: {e}")
+        elif self.tickflow_base_url and self.tickflow_api_key:
+            print(f"⚠️ [DataCenter] TickFlow 冷却中，跳过本次请求: {symbol}")
+
+        if not self.akshare_enabled:
+            return pd.DataFrame(), "cache"
+
         clean_code = self._clean_symbol(symbol)
         if self._source_in_cooldown("akshare"):
             print(f"⚠️ [DataCenter] AKShare 冷却中，跳过本次请求: {symbol}")
@@ -437,6 +542,7 @@ class DataCenter:
         new_df = new_df.dropna(subset=["date"]).copy()
         new_df.sort_values(by="date", ascending=True, inplace=True)
         new_df.reset_index(drop=True, inplace=True)
+        new_df["name"] = self.get_stock_name(symbol)
         new_df.attrs["data_source"] = "remote"
         return new_df, "remote"
 

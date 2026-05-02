@@ -139,6 +139,8 @@ const advance30Days = () => {
 };
 
 
+const resolveStockName = (row) => String(row?.display_name || row?.name || row?.stock_name || row?.stockName || row?.ticker || '').trim();
+
 const fetchData = async () => {
   loading.value = true;
   summaryState.value = '数据加载中';
@@ -147,7 +149,7 @@ const fetchData = async () => {
     const payload = res?.data || {};
     const rows = Array.isArray(payload.data) ? payload.data.map((row) => ({
       ...row,
-      display_name: row.name || row.stock_name || row.stockName || row.ticker || '',
+      display_name: resolveStockName(row),
     })) : [];
     const source = payload.data_source || '';
     const note = payload.fetch_note || '';
