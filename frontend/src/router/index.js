@@ -1,14 +1,10 @@
 import { createRouter, createWebHistory } from 'vue-router';
-import Dashboard from '../views/Dashboard.vue';
-import Detail from '../views/Detail.vue';
-import ConfigManager from '../views/ConfigManager.vue';
-import MxHub from '../views/MxHub.vue';
 
 const routes = [
-  { path: '/', component: Dashboard },
-  { path: '/config', component: ConfigManager },
-  { path: '/mx', component: MxHub, props: { initialTab: 'search' } },
-  { path: '/stock/:ticker', component: Detail, props: true },
+  { path: '/', component: () => import('../views/Dashboard.vue') },
+  { path: '/config', component: () => import('../views/ConfigManager.vue') },
+  { path: '/mx', component: () => import('../views/MxHub.vue'), props: { initialTab: 'search' } },
+  { path: '/stock/:ticker', component: () => import('../views/Detail.vue'), props: true },
 ];
 
 const router = createRouter({

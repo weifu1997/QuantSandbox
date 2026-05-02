@@ -58,7 +58,6 @@ import { ref, onMounted, onUnmounted, nextTick, computed } from 'vue';
 import { useRouter, useRoute } from 'vue-router';
 import { ArrowLeft, RefreshLeft, VideoPlay, Right } from '@element-plus/icons-vue';
 import { getStockDetail } from '../api';
-import { createChart } from 'lightweight-charts';
 import { ElMessage } from 'element-plus';
 
 const props = defineProps(['ticker']);
@@ -185,6 +184,7 @@ const initChartAndData = async () => {
 
     await nextTick();
     
+    const { createChart } = await import('lightweight-charts');
     klineChart = createChart(klineChartRef.value, { ...darkThemeOptions, width: klineChartRef.value.clientWidth, height: 400 });
     candlestickSeries = klineChart.addCandlestickSeries({ upColor: '#F6465D', downColor: '#0ECB81', borderVisible: false, wickUpColor: '#F6465D', wickDownColor: '#0ECB81' });
 

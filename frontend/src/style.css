@@ -8,6 +8,9 @@
   --accent-bg: rgba(14, 203, 129, 0.12);
   --accent-border: rgba(14, 203, 129, 0.45);
   --social-bg: rgba(15, 19, 26, 0.8);
+  --panel-bg: #131722;
+  --panel-bg-2: #1a1e29;
+  --panel-border: #2b3139;
   --shadow:
     rgba(0, 0, 0, 0.45) 0 10px 15px -3px, rgba(0, 0, 0, 0.25) 0 4px 6px -2px;
 
@@ -39,6 +42,104 @@ body {
 #app {
   min-height: 100vh;
   background: var(--bg);
+}
+
+.el-card,
+.el-card.is-always-shadow,
+.el-tabs,
+.el-tabs--border-card,
+.el-tabs__header,
+.el-tabs__nav-wrap,
+.el-tabs__nav-scroll,
+.el-tabs__nav,
+.el-tabs__item,
+.el-tabs__active-bar,
+.el-tabs--border-card > .el-tabs__header,
+.el-tabs--border-card > .el-tabs__content,
+.el-tabs--border-card > .el-tabs__header .el-tabs__item,
+.el-tabs--border-card > .el-tabs__header .el-tabs__item.is-active,
+.el-tabs--border-card > .el-tabs__header .el-tabs__item:hover,
+.el-collapse,
+.el-collapse-item__header,
+.el-collapse-item__wrap,
+.el-descriptions,
+.el-descriptions__body,
+.el-descriptions__table,
+.el-descriptions__table tbody,
+.el-descriptions__table tr,
+.el-descriptions__cell,
+.el-descriptions__content,
+.el-descriptions__label,
+.el-table,
+.el-table__inner-wrapper,
+.el-table__header-wrapper,
+.el-table__body-wrapper,
+.el-table__fixed,
+.el-table__fixed-right,
+.el-table__empty-block,
+.el-table__empty-text {
+  background-color: var(--panel-bg);
+  color: var(--text);
+}
+
+.el-card,
+.el-tabs,
+.el-tabs--border-card,
+.el-tabs__header,
+.el-tabs__nav-wrap,
+.el-tabs__nav-scroll,
+.el-tabs__nav,
+.el-tabs__item,
+.el-tabs--border-card,
+.el-tabs--border-card > .el-tabs__header,
+.el-collapse,
+.el-collapse-item__header,
+.el-collapse-item__wrap,
+.el-descriptions,
+.el-descriptions__body,
+.el-descriptions__table,
+.el-descriptions__cell,
+.el-table,
+.el-table__inner-wrapper {
+  border-color: var(--panel-border);
+}
+
+.el-tabs--border-card > .el-tabs__header .el-tabs__item.is-active {
+  background-color: var(--panel-bg-2);
+  color: var(--text-h);
+}
+
+.el-tabs--border-card > .el-tabs__header .el-tabs__item,
+.el-tabs--border-card > .el-tabs__header .el-tabs__item:hover,
+.el-tabs--border-card > .el-tabs__header .el-tabs__item.is-active {
+  box-shadow: none;
+}
+
+.el-descriptions__body,
+.el-descriptions__table,
+.el-descriptions__table tbody,
+.el-descriptions__table tr,
+.el-descriptions__table td,
+.el-descriptions__table th,
+.el-descriptions__cell,
+.el-descriptions__label,
+.el-descriptions__content {
+  background-color: var(--panel-bg) !important;
+  color: var(--text) !important;
+}
+
+.el-descriptions__table td,
+.el-descriptions__table th,
+.el-descriptions__table .el-descriptions__cell,
+.el-descriptions__table .el-descriptions__label,
+.el-descriptions__table .el-descriptions__content {
+  border-color: var(--panel-border) !important;
+}
+
+.el-table th.el-table__cell,
+.el-table td.el-table__cell {
+  background-color: var(--panel-bg-2);
+  color: var(--text-h);
 }
 
 h1,
