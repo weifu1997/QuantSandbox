@@ -31,7 +31,7 @@
 
       <el-table :data="tableData" style="width: 100%" v-loading="loading" @row-click="goToDetail" stripe table-layout="auto">
         <el-table-column prop="ticker" label="股票代码" min-width="120" />
-        <el-table-column prop="name" label="股票名称" min-width="140" />
+        <el-table-column prop="display_name" label="股票名称" min-width="140" />
         <el-table-column prop="strategy" label="量化策略" min-width="160" />
         <el-table-column prop="final_equity" label="期末净值" min-width="120">
           <template #default="scope">
@@ -145,7 +145,10 @@ const fetchData = async () => {
   try {
     const res = await getSummary(dateRange.value[0], dateRange.value[1]);
     const payload = res?.data || {};
-    const rows = Array.isArray(payload.data) ? payload.data : [];
+    const rows = Array.isArray(payload.data) ? payload.data.map((row) => ({
+      ...row,
+      display_name: row.name || row.stock_name || row.stockName || row.ticker || '',
+    })) : [];
     const source = payload.data_source || '';
     const note = payload.fetch_note || '';
 

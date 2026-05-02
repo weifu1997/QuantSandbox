@@ -107,6 +107,20 @@ def _extract_today_trades(logs: list[dict], end_date: str) -> list[dict]:
     ]
 
 
+def _resolve_stock_name(df: pd.DataFrame, ticker: str) -> str:
+    if not df.empty and "name" in df.columns:
+        name = str(df["name"].iloc[0] or "").strip()
+        if name:
+            return name
+    try:
+        name = str(dc.get_stock_name(ticker) or "").strip()
+        if name:
+            return name
+    except Exception:
+        pass
+    return ""
+
+
 def _build_detail_result(config: dict, ticker: str, df_signals: pd.DataFrame, start_date: str, end_date: str, stock_name: str, data_source: str, fetch_note: str = ""):
     mask = (df_signals['date'] >= pd.to_datetime(start_date)) & (df_signals['date'] <= pd.to_datetime(end_date))
     df_slice = df_signals.loc[mask].copy().reset_index(drop=True)
@@ -177,6 +191,7 @@ async def get_summary(background_tasks: BackgroundTasks, start_date: str = "2024
         return {
             "ticker": ticker,
             "name": stock_name,
+            "display_name": stock_name or ticker,
             "strategy": config['strategy']['name'],
             "final_equity": meta['final_equity'],
             "return_rate": meta['total_return'],
@@ -196,12 +211,14 @@ async def get_summary(background_tasks: BackgroundTasks, start_date: str = "2024
                 raw_data = dc._load_cache_df(cache_record["file_path"])
                 if raw_data.empty:
                     return None
-                stock_name = str(raw_data["name"].iloc[0] or "") if "name" in raw_data.columns else ""
+                stock_name = _resolve_stock_name(raw_data, ticker)
                 return _build_result(ticker, raw_data, stock_name, "cache", "缓存优先：summary 未触发远端补齐")
 
             return await asyncio.to_thread(_load_and_build)
         except Exception as e:
-            print(f"⚠️ 处理 {ticker} 失败: {e}")
+            print(f"⚠️ 处理 {ticker} 失败: {repr(e)}")
+            import traceback
+            traceback.print_exc()
             return None
 
     async def _process_remote(ticker: str):
@@ -209,14 +226,16 @@ async def get_summary(background_tasks: BackgroundTasks, start_date: str = "2024
             raw_data = await fetch_stock_data_with_timeout(ticker, start_date="20230101", end_date=end_date, timeout=10)
 
             def _build_remote():
-                stock_name = str(raw_data["name"].iloc[0] or "") if (not raw_data.empty and "name" in raw_data.columns) else ""
+                stock_name = _resolve_stock_name(raw_data, ticker)
                 data_source = raw_data.attrs.get("data_source", "remote") if hasattr(raw_data, "attrs") else "remote"
                 fetch_note = raw_data.attrs.get("fetch_note", "") if hasattr(raw_data, "attrs") else ""
                 return _build_result(ticker, raw_data, stock_name, data_source, fetch_note)
 
             return await asyncio.to_thread(_build_remote)
         except Exception as e:
-            print(f"⚠️ 处理 {ticker} 失败: {e}")
+            print(f"⚠️ 处理 {ticker} 失败: {repr(e)}")
+            import traceback
+            traceback.print_exc()
             return None
 
     async def _collect(tickers, budget_sec: float, handler):
@@ -311,7 +330,7 @@ async def get_detail(ticker: str, start_date: str = "20240101", end_date: str = 
         if cache_record and os.path.exists(cache_record["file_path"]):
             cached_data = dc._load_cache_df(cache_record["file_path"])
             if not cached_data.empty:
-                stock_name = str(cached_data["name"].iloc[0] or "") if "name" in cached_data.columns else ""
+                stock_name = _resolve_stock_name(cached_data, ticker)
                 effective_end = min(end_date, cache_record.get("end_date", end_date))
                 df_signals = StrategyFactory.generate_signals(
                     cached_data,
@@ -331,7 +350,7 @@ async def get_detail(ticker: str, start_date: str = "20240101", end_date: str = 
 
         raw_data = await fetch_stock_data_with_timeout(ticker, start_date="20230101", end_date=end_date, timeout=10)
 
-        stock_name = str(raw_data["name"].iloc[0] or "") if (not raw_data.empty and "name" in raw_data.columns) else ""
+        stock_name = _resolve_stock_name(raw_data, ticker)
         df_signals = StrategyFactory.generate_signals(
             raw_data,
             config['strategy']['name'],

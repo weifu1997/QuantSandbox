@@ -85,6 +85,47 @@ class DataCenter:
         conn.row_factory = sqlite3.Row
         return conn
 
+    def _clean_ticker_to_code(self, symbol: str) -> str:
+        return self._clean_symbol(symbol)
+
+    def get_stock_name(self, symbol: str) -> str:
+        """获取股票名称，优先内存缓存，其次 Tushare 元信息，再走本地兜底表。"""
+        symbol = str(symbol or "").strip()
+        if not symbol:
+            return ""
+
+        ts_code = self._to_ts_code(symbol)
+        if ts_code in self._stock_meta_cache:
+            name = str(self._stock_meta_cache.get(ts_code, {}).get("name", "") or "").strip()
+            if name:
+                return name
+
+        if self.tushare_base_url and self.tushare_token:
+            try:
+                meta = self._fetch_stock_meta_from_tushare_proxy(symbol)
+                name = str(meta.get("name", "") or "").strip()
+                if name:
+                    return name
+            except Exception:
+                pass
+
+        local_name_map = {
+            "sz000719": "中原传媒",
+            "sh600483": "福能股份",
+            "sz000883": "湖北能源",
+            "sh601598": "中国外运",
+            "sh600098": "广州发展",
+            "sh600177": "雅戈尔",
+        }
+        code = self._clean_ticker_to_code(symbol)
+        if code:
+            for candidate in (code, code.upper(), code.lower()):
+                name = local_name_map.get(candidate, "")
+                if name:
+                    return name
+
+        return ""
+
     def _init_cache_index_db(self):
         """初始化缓存索引数据库"""
         with self._get_cache_conn() as conn:
