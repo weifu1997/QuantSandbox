@@ -7,4 +7,5 @@ numpy
 requests
 PyYAML
 akshare
+pandas_market_calendars
 python-multipart

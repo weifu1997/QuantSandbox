@@ -14,6 +14,10 @@ try:
     import akshare as ak
 except ImportError:
     ak = None
+try:
+    import pandas_market_calendars as mcal
+except ImportError:
+    mcal = None
 import yaml
 import logging
 from datetime import date, datetime, timedelta
@@ -593,11 +597,33 @@ class DataCenter:
             cursor -= timedelta(days=1)
         return cursor
 
+    def _latest_trade_date_from_market_calendar(self, target: date | None = None) -> str | None:
+        if mcal is None:
+            return None
+        cursor = target or datetime.now().date()
+        start = cursor - timedelta(days=14)
+        try:
+            schedule = mcal.get_calendar('SSE').schedule(
+                start_date=start.isoformat(),
+                end_date=cursor.isoformat(),
+            )
+        except Exception as exc:
+            logger.warning(f"⚠️ [DataCenter] pandas_market_calendars 解析 SSE 交易日历失败: {exc}")
+            return None
+        if schedule.empty:
+            return None
+        return schedule.index[-1].strftime('%Y%m%d')
+
     def get_latest_trade_date(self) -> str:
-        """返回最近一个 A 股交易日，避免周末/节假日落到非交易日。"""
+        """优先使用交易所日历，缺失时回退到本地 A 股交易日规则。"""
+        market_calendar_latest = self._latest_trade_date_from_market_calendar()
+        if market_calendar_latest:
+            logger.info(f"🔎 [DataCenter] 最新交易日使用 pandas_market_calendars: {market_calendar_latest}")
+            return market_calendar_latest
+
         latest = self._resolve_latest_trading_day()
         latest_str = latest.strftime("%Y%m%d")
-        logger.info(f"🔎 [DataCenter] 最新交易日使用 latest_trading_day: {latest_str}")
+        logger.info(f"🔎 [DataCenter] 最新交易日回退到本地交易日历: {latest_str}")
         return latest_str
 
     def _normalize_tushare_daily(self, df: pd.DataFrame) -> pd.DataFrame:
