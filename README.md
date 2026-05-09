@@ -74,6 +74,7 @@ cd QuantSandbox
 ```bash
 ./scripts/backend_ctl.sh start
 ./scripts/backend_ctl.sh status
+./scripts/backend_ctl.sh doctor
 ./scripts/backend_ctl.sh logs
 ./scripts/backend_ctl.sh stop
 ```
