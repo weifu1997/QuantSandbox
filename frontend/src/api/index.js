@@ -54,8 +54,12 @@ export const getWorkflowCandidates = (runId, status) => {
   return api.get(`/workflows/${runId}/candidates`, { params: status ? { status } : {} });
 };
 
-export const getWatchlist = () => {
-  return api.get('/watchlist');
+export const getWatchlist = (view = 'all') => {
+  return api.get('/watchlist', { params: { view } });
+};
+
+export const getLatestWatchlist = () => {
+  return api.get('/watchlist/latest');
 };
 
 export const updateWatchlistEntry = (entryId, payload) => {

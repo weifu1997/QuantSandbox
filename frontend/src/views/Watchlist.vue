@@ -25,6 +25,10 @@
           <el-option label="中风险" value="medium" />
           <el-option label="高风险" value="high" />
         </el-select>
+        <el-radio-group v-model="watchlistView" size="small" class="view-toggle">
+          <el-radio-button label="latest">当前视图</el-radio-button>
+          <el-radio-button label="all">全部历史</el-radio-button>
+        </el-radio-group>
         <el-button type="primary" @click="refresh" :loading="loading">刷新</el-button>
       </div>
     </el-card>
@@ -169,7 +173,7 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted } from 'vue';
+import { ref, computed, onMounted, watch } from 'vue';
 import { getWatchlist, updateWatchlistEntry, batchDeleteWatchlist } from '../api';
 import { ElMessage, ElMessageBox } from 'element-plus';
 
@@ -179,6 +183,7 @@ const saving = ref(false);
 const allData = ref([]);
 const searchText = ref('');
 const riskFilter = ref('');
+const watchlistView = ref('latest');
 const detailVisible = ref(false);
 const editVisible = ref(false);
 const selectedRow = ref(null);
@@ -296,7 +301,7 @@ async function handleBatchDelete() {
 async function refresh() {
   loading.value = true;
   try {
-    const res = await getWatchlist();
+    const res = await getWatchlist(watchlistView.value);
     allData.value = res.data?.data || [];
   } catch (e) {
     const msg = e?.response?.data?.detail || e?.message || '加载失败';
@@ -305,6 +310,10 @@ async function refresh() {
     loading.value = false;
   }
 }
+
+watch(watchlistView, () => {
+  refresh();
+});
 
 onMounted(refresh);
 </script>
