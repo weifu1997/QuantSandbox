@@ -82,18 +82,10 @@ def test_xuangu_parse_prefers_dynamic_and_plain_csv_columns(tmp_path):
     assert row['month_return'] == '7.83'
 
 
-class _StubRunner(LowValueWorkflowRunner):
-    def __init__(self, snapshot=None):
-        super().__init__()
-        self._snapshot = snapshot
-
-    def _extract_latest_snapshot(self, sec_name: str, symbol: str):
-        return self._snapshot
-
-
 def test_watch_price_zone_uses_candidate_latest_price_when_snapshot_missing():
-    runner = _StubRunner(snapshot=None)
-    zone = runner._derive_watch_price_zone(
+    runner = LowValueWorkflowRunner()
+    runner.price_zone_builder.extract_latest_snapshot = lambda sec_name, symbol: None
+    zone = runner.price_zone_builder.derive_watch_price_zone(
         '福达股份',
         '603166',
         {
@@ -117,5 +109,5 @@ def test_watchlist_recompute_needs_persisted_base_factors():
         'month_return': '13.00',
         'st_flag': '否',
     }
-    reason = runner._derive_entry_reason(candidate_data, ['分红催化'])
+    reason = runner.entry_reason_builder.derive_entry_reason(candidate_data, ['分红催化'])
     assert reason == 'PB 3.62；PE 31.38；股息率 0.68%；近20交易日 13.00%；催化: 分红催化'

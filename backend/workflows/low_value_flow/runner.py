@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from datetime import datetime
 from uuid import uuid4
 import logging
 from typing import Any
@@ -56,29 +55,6 @@ class LowValueWorkflowRunner:
         self.entry_reason_builder = EntryReasonBuilder(self.risk_assessor)
         self.price_zone_builder = PriceZoneBuilder(self.data_service, self.risk_assessor)
         self.catalyst_extractor = CatalystExtractor()
-
-    @staticmethod
-    def _safe_float(value: object) -> float | None:
-        return RiskAssessor.safe_float(value)
-
-    def _derive_risk_level(self, candidate_data: dict | None):
-        return self.risk_assessor.derive_risk_level(candidate_data)
-
-    @staticmethod
-    def _derive_board(symbol: str, explicit_board: str | None = None) -> str:
-        return EntryReasonBuilder.derive_board(symbol, explicit_board)
-
-    def _extract_latest_snapshot(self, sec_name: str, symbol: str) -> dict[str, float | str] | None:
-        return self.price_zone_builder.extract_latest_snapshot(sec_name, symbol)
-
-    def _derive_watch_price_zone(self, sec_name: str, symbol: str, candidate_data: dict | None) -> str:
-        return self.price_zone_builder.derive_watch_price_zone(sec_name, symbol, candidate_data)
-
-    def _derive_catalyst_factors(self, search_review_data: dict | list | str | None) -> list[str]:
-        return self.catalyst_extractor.derive_catalyst_factors(search_review_data)
-
-    def _derive_entry_reason(self, candidate_data: dict | None, catalysts: list[str]) -> str:
-        return self.entry_reason_builder.derive_entry_reason(candidate_data, catalysts)
 
     def _load_candidate_reviews(self, candidate) -> dict[str, CandidateReview]:
         reviews = getattr(candidate, 'reviews', None) or []
@@ -300,15 +276,15 @@ class LowValueWorkflowRunner:
                     reviews = self._load_candidate_reviews(candidate)
                     search_review = reviews.get('search')
                     base_data = dict(candidate.data) if isinstance(candidate.data, dict) else dict(item)
-                    base_data['board'] = self._derive_board(symbol, base_data.get('board'))
-                    catalyst_factors = self._derive_catalyst_factors(getattr(search_review, 'review_data', None))
+                    base_data['board'] = self.entry_reason_builder.derive_board(symbol, base_data.get('board'))
+                    catalyst_factors = self.catalyst_extractor.derive_catalyst_factors(getattr(search_review, 'review_data', None))
                     watch_repo.create(
                         WatchlistEntry(
                             workflow_run_id=run_id,
                             symbol=symbol,
                             name=name,
-                            entry_reason=self._derive_entry_reason(base_data, catalyst_factors),
-                            risk_level=self._derive_risk_level(base_data),
+                            entry_reason=self.entry_reason_builder.derive_entry_reason(base_data, catalyst_factors),
+                            risk_level=self.risk_assessor.derive_risk_level(base_data),
                             catalyst_factors=catalyst_factors,
                             board=base_data.get('board') or None,
                             pe_ttm=str(base_data.get('pe_ttm', '') or ''),
@@ -317,7 +293,7 @@ class LowValueWorkflowRunner:
                             dividend_yield=str(base_data.get('dividend_yield', '') or ''),
                             month_return=str(base_data.get('month_return', '') or ''),
                             st_flag=str(base_data.get('st_flag', '') or ''),
-                            watch_price_zone=self._derive_watch_price_zone(name, symbol, base_data),
+                            watch_price_zone=self.price_zone_builder.derive_watch_price_zone(name, symbol, base_data),
                         )
                     )
         has_failure = any(not x['ok'] for x in add_results)
