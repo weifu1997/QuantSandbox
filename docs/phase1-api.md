@@ -55,6 +55,7 @@ Returns recent workflow runs for the history page.
     {
       "id": "uuid",
       "user_id": "test-user",
+      "workflow_type": "low_value_discovery",
       "status": "completed",
       "started_at": "2026-05-09T09:00:00",
       "completed_at": "2026-05-09T09:01:00",
@@ -136,7 +137,55 @@ Returns detail for a single step.
 
 ### `GET /api/watchlist`
 
-Returns all watchlist rows in reverse created order.
+Returns watchlist rows in reverse created order.
+
+### Query params
+
+- `view` — optional, `all` (default) or `latest`
+
+### Related endpoint
+
+- `GET /api/watchlist/latest` — explicit alias for `view=latest`
+
+### Watchlist response example
+
+```json
+{
+  "status": "success",
+  "data": [
+    {
+      "id": "uuid",
+      "workflow_run_id": "run-uuid",
+      "symbol": "603166",
+      "name": "福达股份",
+      "entry_reason": "PB 3.62；PE 31.38",
+      "risk_level": "medium",
+      "catalyst_factors": ["高分红"],
+      "board": "主板",
+      "pe_ttm": "31.38",
+      "pb": "3.6164",
+      "latest_price": "14.60",
+      "dividend_yield": "0.6754",
+      "month_return": "13.00",
+      "st_flag": "否",
+      "metrics": {
+        "pe_ttm": 31.38,
+        "pb": 3.6164,
+        "latest_price": 14.6,
+        "dividend_yield": 0.6754,
+        "month_return": 13.0
+      },
+      "watch_price_zone": "4.04~5.25 元（PB 1.0~1.3）",
+      "entry_date": "2026-05-09T09:00:00",
+      "created_at": "2026-05-09T09:00:00"
+    }
+  ]
+}
+```
+
+Notes:
+- top-level string fields are retained for backward compatibility
+- `metrics` exposes numeric watchlist values for future sorting/filtering and backend recompute support
 
 ---
 
@@ -153,7 +202,10 @@ Partial update for phase-1 watchlist management.
   "entry_reason": "更新后的入池理由",
   "risk_level": "high",
   "catalyst_factors": ["业绩改善", "高分红"],
-  "watch_price_zone": "10.00~12.00 元"
+  "watch_price_zone": "10.00~12.00 元",
+  "pb": "3.62",
+  "latest_price": "14.60",
+  "dividend_yield": "0.88"
 }
 ```
 
@@ -163,6 +215,8 @@ Partial update for phase-1 watchlist management.
 - `catalyst_factors` may be an array or a delimited string
 - invalid `risk_level` returns `400`
 - missing entry returns `404`
+- watchlist numeric text fields (`pe_ttm`, `pb`, `latest_price`, `dividend_yield`, `month_return`) are stored as text for compatibility and mirrored into numeric `metrics` values
+- if a numeric text field cannot be parsed (for example `"--"`), its numeric mirror becomes `null` without clearing the text field
 
 ---
 

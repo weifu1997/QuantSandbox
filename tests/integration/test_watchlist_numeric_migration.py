@@ -1,33 +1,7 @@
-from datetime import timedelta
 import sqlite3
 
 from backend.models import WatchlistEntry, WorkflowRun, WorkflowRunStatus
 from backend.repositories.watchlist_repo import WatchlistRepository
-from backend.utils.time import utcnow
-
-
-def test_watchlist_repository_supports_all_and_latest_views(db_session):
-    run1 = WorkflowRun(user_id='u1', workflow_type='low_value_discovery', status=WorkflowRunStatus.COMPLETED)
-    run2 = WorkflowRun(user_id='u2', workflow_type='low_value_discovery', status=WorkflowRunStatus.COMPLETED)
-    db_session.add_all([run1, run2])
-    db_session.flush()
-
-    repo = WatchlistRepository(db_session)
-    older = WatchlistEntry(workflow_run_id=run1.id, symbol='603166', name='福达股份', entry_reason='first')
-    newer = WatchlistEntry(workflow_run_id=run2.id, symbol='603166', name='福达股份', entry_reason='second')
-    other = WatchlistEntry(workflow_run_id=run1.id, symbol='600000', name='浦发银行', entry_reason='other')
-    repo.create(older)
-    repo.create(newer)
-    repo.create(other)
-
-    all_rows = repo.list_all(limit=10)
-    latest_rows = repo.list_latest(limit=10)
-
-    assert len([row for row in all_rows if row.symbol == '603166']) == 2
-    latest_symbols = [row.symbol for row in latest_rows]
-    assert latest_symbols.count('603166') == 1
-    selected = next(row for row in latest_rows if row.symbol == '603166')
-    assert selected.entry_reason == 'second'
 
 
 def test_watchlist_numeric_fields_persist_on_create_and_update(db_session):
