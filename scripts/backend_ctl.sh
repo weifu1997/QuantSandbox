@@ -6,6 +6,9 @@ PID_FILE="$ROOT_DIR/.run/backend.pid"
 LOG_FILE="$ROOT_DIR/logs/backend.log"
 HOST="127.0.0.1"
 PORT="8000"
+READY_URL="http://$HOST:$PORT/openapi.json"
+READY_TIMEOUT_SECONDS="10"
+READY_INTERVAL_SECONDS="0.2"
 
 mkdir -p "$ROOT_DIR/.run" "$ROOT_DIR/logs"
 
@@ -100,6 +103,49 @@ get_exported_value() {
   printf '%s' "$value"
 }
 
+wait_for_backend_ready() {
+  python3 - "$READY_URL" "$READY_TIMEOUT_SECONDS" "$READY_INTERVAL_SECONDS" "$PID_FILE" <<'PY'
+import json
+import sys
+import time
+import urllib.request
+from pathlib import Path
+
+ready_url = sys.argv[1]
+timeout = float(sys.argv[2])
+interval = float(sys.argv[3])
+pid_file = Path(sys.argv[4])
+deadline = time.time() + timeout
+last_error = "unknown"
+
+while time.time() < deadline:
+    pid = pid_file.read_text().strip() if pid_file.exists() else ""
+    if not pid:
+        print("backend readiness failed: pid file missing", file=sys.stderr)
+        sys.exit(1)
+    proc_path = Path(f"/proc/{pid}")
+    if not proc_path.exists():
+        print(f"backend readiness failed: pid {pid} exited before ready", file=sys.stderr)
+        sys.exit(1)
+    try:
+        with urllib.request.urlopen(ready_url, timeout=2) as r:
+            if r.status == 200:
+                try:
+                    json.load(r)
+                except Exception:
+                    pass
+                print("ready")
+                sys.exit(0)
+            last_error = f"HTTP {r.status}"
+    except Exception as e:
+        last_error = repr(e)
+    time.sleep(interval)
+
+print(f"backend readiness timeout after {timeout}s: {last_error}", file=sys.stderr)
+sys.exit(1)
+PY
+}
+
 start() {
   if is_running >/dev/null 2>&1; then
     echo "backend already running: $(cat "$PID_FILE")"
@@ -129,13 +175,16 @@ start() {
   export MX_API_URL
   nohup env MX_APIKEY="${MX_APIKEY:-}" MX_API_URL="${MX_API_URL:-}" python3 -m uvicorn backend.main:app --host "$HOST" --port "$PORT" > "$LOG_FILE" 2>&1 &
   echo $! > "$PID_FILE"
-  sleep 1
-  if kill -0 "$(cat "$PID_FILE")" 2>/dev/null; then
+
+  if wait_for_backend_ready >/dev/null; then
     echo "backend started: $(cat "$PID_FILE")"
+    echo "ready_url: $READY_URL"
     echo "log: $LOG_FILE"
   else
-    echo "backend failed to start"
+    echo "backend failed to become ready"
     show_port_owners
+    echo "recent log tail:"
+    tail -n 20 "$LOG_FILE" || true
     exit 1
   fi
 }
@@ -180,6 +229,7 @@ status() {
     pid_status="stale pid file: $(cat "$PID_FILE" 2>/dev/null || echo unknown)"
   fi
   echo "$pid_status"
+  echo "ready_url: $READY_URL"
   echo "log: $LOG_FILE"
 
   local port_pids
@@ -198,6 +248,9 @@ doctor() {
   echo "log_file: $LOG_FILE"
   echo "host: $HOST"
   echo "port: $PORT"
+  echo "ready_url: $READY_URL"
+  echo "ready_timeout_seconds: $READY_TIMEOUT_SECONDS"
+  echo "ready_interval_seconds: $READY_INTERVAL_SECONDS"
   echo
 
   if [[ -f "$PID_FILE" ]]; then
@@ -260,11 +313,8 @@ case "${1:-}" in
     ;;
   status) status ;;
   doctor) doctor ;;
-  logs)
-    tail -n 200 -f "$LOG_FILE"
-    ;;
   *)
-    echo "usage: $0 {start|stop|restart|status|doctor|logs}"
+    echo "Usage: $0 {start|stop|restart|status|doctor}"
     exit 1
     ;;
 esac

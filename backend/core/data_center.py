@@ -86,11 +86,18 @@ class DataCenter:
         return symbol
 
     def _to_ts_code(self, symbol: str) -> str:
-        """把 sh600036 / sz000858 转成 Tushare 的 600036.SH / 000858.SZ"""
+        """把 sh600036 / sz000858 / 裸代码 转成 600036.SH / 000858.SZ 供 Tushare / TickFlow 使用"""
+        symbol = str(symbol or "").strip()
         code = self._clean_symbol(symbol)
         if symbol.startswith("sh"):
             return f"{code}.SH"
         if symbol.startswith("sz"):
+            return f"{code}.SZ"
+        if symbol.endswith('.SH') or symbol.endswith('.SZ'):
+            return symbol
+        if len(code) == 6:
+            if code.startswith(('5', '6', '9')):
+                return f"{code}.SH"
             return f"{code}.SZ"
         return symbol
 

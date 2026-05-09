@@ -24,6 +24,10 @@
           <el-tag :type="statusTag" size="small">{{ statusLabel }}</el-tag>
         </div>
         <div class="info-item">
+          <span class="info-label">工作流类型</span>
+          <span>{{ workflowTypeLabel(run.workflow_type) }}</span>
+        </div>
+        <div class="info-item">
           <span class="info-label">用户</span>
           <span>{{ run.user_id || '-' }}</span>
         </div>
@@ -193,6 +197,16 @@ const statusLabel = computed(() => {
   const map = { completed: '已完成', running: '运行中', failed: '失败' };
   return map[run.value?.status] || run.value?.status || '-';
 });
+
+function workflowTypeLabel(type) {
+  const map = {
+    low_value_discovery: '低估发现流',
+    bottom_confirm: '底部确认流',
+    position_manage: '仓位管理流',
+    catalyst_ambush: '催化埋伏流',
+  };
+  return map[type] || type || '-';
+}
 
 function formatTime(t) {
   if (!t) return '-';

@@ -32,6 +32,11 @@
             <router-link :to="`/workflow/${row.id}`" class="run-link">{{ row.id }}</router-link>
           </template>
         </el-table-column>
+        <el-table-column prop="workflow_type" label="工作流类型" width="180" show-overflow-tooltip>
+          <template #default="{ row }">
+            <el-tag size="small" type="info">{{ workflowTypeLabel(row.workflow_type) }}</el-tag>
+          </template>
+        </el-table-column>
         <el-table-column prop="status" label="状态" width="110">
           <template #default="{ row }">
             <el-tag :type="statusTag(row.status)" size="small">{{ statusLabel(row.status) }}</el-tag>
@@ -79,6 +84,16 @@ function statusTag(status) {
 
 function statusLabel(status) {
   return { completed: '已完成', running: '运行中', failed: '失败' }[status] || status || '-';
+}
+
+function workflowTypeLabel(type) {
+  const map = {
+    low_value_discovery: '低估发现流',
+    bottom_confirm: '底部确认流',
+    position_manage: '仓位管理流',
+    catalyst_ambush: '催化埋伏流',
+  };
+  return map[type] || type || '-';
 }
 
 function formatTime(value) {

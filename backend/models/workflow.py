@@ -9,6 +9,7 @@ from sqlalchemy import DateTime, Enum as SAEnum, Integer, JSON, String, Text, In
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from backend.db.base import Base
+from backend.workflows.types import WorkflowType
 
 
 class WorkflowRunStatus(str, Enum):
@@ -31,6 +32,7 @@ class WorkflowRun(Base):
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
     user_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    workflow_type: Mapped[str] = mapped_column(String(32), nullable=False, default=WorkflowType.LOW_VALUE.value, index=True)
     status: Mapped[WorkflowRunStatus] = mapped_column(
         SAEnum(WorkflowRunStatus, name="workflow_run_status"),
         nullable=False,
