@@ -25,6 +25,7 @@ from backend.repositories import (
     WorkflowStepRunRepository,
 )
 from backend.services.mx import DataService, SearchService, XuanguService, ZixuanService
+from backend.utils.time import utcnow
 from backend.workflows.common.batching import chunked
 from backend.workflows.low_value_flow.rules import should_reject_in_quick_risk, structure_decision_from_data
 from backend.workflows.low_value_flow.schemas import LowValueRunInput, build_default_query
@@ -291,7 +292,7 @@ class LowValueWorkflowRunner:
                     user_id=payload.user_id,
                     workflow_type=WorkflowType.LOW_VALUE.value,
                     status=WorkflowRunStatus.RUNNING,
-                    started_at=datetime.utcnow(),
+                    started_at=utcnow(),
                     total_steps=5,
                     config={
                         'use_default_template': payload.use_default_template,
@@ -313,7 +314,7 @@ class LowValueWorkflowRunner:
                     step_code=step_code,
                     step_name=step_name,
                     status=WorkflowStepStatus.RUNNING,
-                    started_at=datetime.utcnow(),
+                    started_at=utcnow(),
                 )
             )
         return step_id
@@ -325,7 +326,7 @@ class LowValueWorkflowRunner:
             if not step:
                 return
             step.status = status
-            step.completed_at = datetime.utcnow()
+            step.completed_at = utcnow()
             step.result_data = result_data
             step.error_message = error_message
 
@@ -337,7 +338,7 @@ class LowValueWorkflowRunner:
                 return
             run.status = status
             if status in {WorkflowRunStatus.COMPLETED, WorkflowRunStatus.FAILED, WorkflowRunStatus.CANCELLED}:
-                run.completed_at = datetime.utcnow()
+                run.completed_at = utcnow()
 
     def _run_step1_xuangu(self, run_id: str, query: str) -> list[dict]:
         step_id = self._create_step(run_id, 'xuangu', 'Step 1 Xuangu')

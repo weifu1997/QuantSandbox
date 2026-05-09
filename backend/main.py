@@ -19,6 +19,8 @@ from backend.api.workflow_endpoints import router as workflow_router
 from backend.api.schemas import MXQueryRequest
 from backend.core.engine import BacktestEngine
 from backend.core.strategy import StrategyFactory
+from backend.db.session import init_db, session_scope
+from backend.repositories import WorkflowRunRepository, WorkflowStepRunRepository
 from backend.services.mx import DataService, SearchService, XuanguService
 from backend.services.mx.zixuan_service import MoniService
 
@@ -36,6 +38,18 @@ app.add_middleware(
 # 实例化数据中心
 dc = DataCenter()
 app.include_router(workflow_router)
+
+
+@app.on_event("startup")
+def startup_housekeeping() -> None:
+    init_db()
+    with session_scope() as s:
+        run_repo = WorkflowRunRepository(s)
+        step_repo = WorkflowStepRunRepository(s)
+        stale_runs = run_repo.mark_stale_running_low_value_failed(stale_after_minutes=60)
+        if stale_runs:
+            stale_run_ids = [run.id for run in stale_runs]
+            step_repo.mark_running_steps_failed_for_run_ids(stale_run_ids)
 
 class ConfigUpdateRequest(BaseModel):
     stock_pool: list[str] | None = None

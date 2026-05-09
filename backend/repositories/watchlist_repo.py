@@ -18,6 +18,10 @@ class WatchlistRepository(BaseRepository[WatchlistEntry]):
         return self.session.get(WatchlistEntry, entry_id)
 
     def list_all(self, limit: int = 100) -> Sequence[WatchlistEntry]:
+        stmt = select(WatchlistEntry).order_by(desc(WatchlistEntry.created_at), desc(WatchlistEntry.entry_date), desc(WatchlistEntry.id)).limit(limit)
+        return self.session.execute(stmt).scalars().all()
+
+    def list_latest(self, limit: int = 100) -> Sequence[WatchlistEntry]:
         latest_created = (
             select(
                 WatchlistEntry.symbol.label("symbol"),

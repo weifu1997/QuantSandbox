@@ -46,6 +46,14 @@ class XuanguService:
                     return text
             return ""
 
+        def value_from_row(row: dict[str, Any], *, regex_patterns: list[str], plain_names: list[str] | None = None, hardcoded_names: list[str] | None = None) -> str:
+            return self._find_column_value(
+                row,
+                regex_patterns=regex_patterns,
+                plain_names=plain_names or [],
+                hardcoded_names=hardcoded_names or [],
+            )
+
         enrichment_cache: dict[str, dict[str, str]] = {}
 
         if csv_path and Path(csv_path).exists():
@@ -54,11 +62,26 @@ class XuanguService:
                 rows = list(reader)
             hit_count = len(rows)
             for row in rows:
-                board = str(row.get("上市板块 截至2026.05.08最新", "") or row.get("上市板块", "")).strip()
+                board = value_from_row(
+                    row,
+                    regex_patterns=[r'^上市板块\s+截至\d{4}\.\d{2}\.\d{2}最新$', r'^上市板块'],
+                    plain_names=['上市板块'],
+                    hardcoded_names=['上市板块 截至2026.05.08最新'],
+                )
                 st_flag = str(row.get("ST股票", "")).strip()
                 symbol = row.get("代码", "")
-                latest_price = row.get("最新价(元) 2026.05.08", "") or row.get("最新价(元)", "")
-                month_return = row.get("区间涨跌幅(%) 2026.04.08 - 2026.05.08", "")
+                latest_price = value_from_row(
+                    row,
+                    regex_patterns=[r'^最新价\(元\)\s+\d{4}\.\d{2}\.\d{2}$'],
+                    plain_names=['最新价(元)'],
+                    hardcoded_names=['最新价(元) 2026.05.08'],
+                )
+                month_return = value_from_row(
+                    row,
+                    regex_patterns=[r'^区间涨跌幅\(%\)\s+\d{4}\.\d{2}\.\d{2}\s+-\s+\d{4}\.\d{2}\.\d{2}$'],
+                    plain_names=['区间涨跌幅(%)'],
+                    hardcoded_names=['区间涨跌幅(%) 2026.04.08 - 2026.05.08'],
+                )
                 if not month_return:
                     month_return = self._compute_month_return(symbol=symbol, latest_price=latest_price)
                 enrichment = enrichment_cache.get(symbol)
@@ -67,7 +90,12 @@ class XuanguService:
                     enrichment_cache[symbol] = enrichment
                 if not board:
                     board = enrichment.get('board', '')
-                dividend_yield = row.get("年度股息率(%) 2025.12.31", "") or enrichment.get('dividend_yield', '')
+                dividend_yield = value_from_row(
+                    row,
+                    regex_patterns=[r'^年度股息率\(%\)\s+\d{4}\.\d{2}\.\d{2}$'],
+                    plain_names=['年度股息率(%)'],
+                    hardcoded_names=['年度股息率(%) 2025.12.31'],
+                ) or enrichment.get('dividend_yield', '')
                 if st_flag:
                     excluded["ST"] = st_flag == "否"
                 elif excluded["ST"] is None:
@@ -90,8 +118,18 @@ class XuanguService:
                         "symbol": symbol,
                         "name": row.get("名称", ""),
                         "board": board,
-                        "pe_ttm": row.get("市盈率(TTM)(倍) 2026.05.08", "") or row.get("市盈率(动)(倍) 2026.05.08", ""),
-                        "pb": row.get("市净率(倍) 2026.05.08", ""),
+                        "pe_ttm": value_from_row(
+                            row,
+                            regex_patterns=[r'^市盈率\(TTM\)\(倍\)\s+\d{4}\.\d{2}\.\d{2}$', r'^市盈率\(动\)\(倍\)\s+\d{4}\.\d{2}\.\d{2}$'],
+                            plain_names=['市盈率(TTM)(倍)', '市盈率(动)(倍)'],
+                            hardcoded_names=['市盈率(TTM)(倍) 2026.05.08', '市盈率(动)(倍) 2026.05.08'],
+                        ),
+                        "pb": value_from_row(
+                            row,
+                            regex_patterns=[r'^市净率\(倍\)\s+\d{4}\.\d{2}\.\d{2}$'],
+                            plain_names=['市净率(倍)'],
+                            hardcoded_names=['市净率(倍) 2026.05.08'],
+                        ),
                         "latest_price": latest_price,
                         "dividend_yield": dividend_yield,
                         "month_return": month_return,
@@ -215,6 +253,50 @@ class XuanguService:
         except Exception:
             pass
         return {'board': board, 'dividend_yield': dividend_yield}
+
+    @staticmethod
+    def _match_dynamic_column(fieldnames: list[str], regex_patterns: list[str]) -> str:
+        for pattern in regex_patterns:
+            regex = re.compile(pattern)
+            for name in fieldnames:
+                if regex.match(str(name or '').strip()):
+                    return name
+        return ''
+
+    @staticmethod
+    def _match_plain_column(fieldnames: list[str], plain_names: list[str]) -> str:
+        normalized = {str(name or '').strip(): name for name in fieldnames}
+        for plain_name in plain_names:
+            if plain_name in normalized:
+                return normalized[plain_name]
+        return ''
+
+    def _find_column_value(
+        self,
+        row: dict[str, Any],
+        *,
+        regex_patterns: list[str],
+        plain_names: list[str],
+        hardcoded_names: list[str],
+    ) -> str:
+        fieldnames = list(row.keys())
+        dynamic_name = self._match_dynamic_column(fieldnames, regex_patterns)
+        if dynamic_name:
+            value = row.get(dynamic_name)
+            if value is not None and str(value).strip():
+                return str(value).strip()
+
+        plain_name = self._match_plain_column(fieldnames, plain_names)
+        if plain_name:
+            value = row.get(plain_name)
+            if value is not None and str(value).strip():
+                return str(value).strip()
+
+        for hardcoded_name in hardcoded_names:
+            value = row.get(hardcoded_name)
+            if value is not None and str(value).strip():
+                return str(value).strip()
+        return ''
 
     def _extract_trade_date_hint(self, raw: dict[str, Any]) -> str:
         csv_path = raw.get('csv_path') or ''

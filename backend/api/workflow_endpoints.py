@@ -162,10 +162,18 @@ def get_workflow_candidates(run_id: str, status: str | None = None):
 
 
 @router.get("/watchlist")
-def get_watchlist():
+def get_watchlist(view: str = Query(default='all', pattern='^(all|latest)$')):
     with session_scope() as s:
         watch_repo = WatchlistRepository(s)
-        rows = watch_repo.list_all()
+        rows = watch_repo.list_latest() if view == 'latest' else watch_repo.list_all()
+        return {"status": "success", "data": [_serialize_watchlist(w) for w in rows]}
+
+
+@router.get("/watchlist/latest")
+def get_watchlist_latest():
+    with session_scope() as s:
+        watch_repo = WatchlistRepository(s)
+        rows = watch_repo.list_latest()
         return {"status": "success", "data": [_serialize_watchlist(w) for w in rows]}
 
 

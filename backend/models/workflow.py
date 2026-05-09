@@ -9,6 +9,7 @@ from sqlalchemy import DateTime, Enum as SAEnum, Integer, JSON, String, Text, In
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from backend.db.base import Base
+from backend.utils.time import utcnow
 from backend.workflows.types import WorkflowType
 
 
@@ -43,9 +44,9 @@ class WorkflowRun(Base):
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=False), nullable=True)
     total_steps: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     config: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=False), nullable=False, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=False), nullable=False, default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=False), nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow
+        DateTime(timezone=False), nullable=False, default=utcnow, onupdate=utcnow
     )
 
     __table_args__ = (

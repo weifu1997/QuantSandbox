@@ -8,6 +8,7 @@ from sqlalchemy import DateTime, Enum as SAEnum, ForeignKey, JSON, String, Text,
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from backend.db.base import Base
+from backend.utils.time import utcnow
 
 
 class RiskLevel(str, Enum):
@@ -39,8 +40,8 @@ class WatchlistEntry(Base):
     month_return: Mapped[str | None] = mapped_column(String(32), nullable=True)
     st_flag: Mapped[str | None] = mapped_column(String(16), nullable=True)
     watch_price_zone: Mapped[str | None] = mapped_column(String(128), nullable=True)
-    entry_date: Mapped[datetime] = mapped_column(DateTime(timezone=False), nullable=False, default=datetime.utcnow)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=False), nullable=False, default=datetime.utcnow)
+    entry_date: Mapped[datetime] = mapped_column(DateTime(timezone=False), nullable=False, default=utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=False), nullable=False, default=utcnow)
 
     __table_args__ = (
         Index('idx_watchlist_created_at', 'created_at'),

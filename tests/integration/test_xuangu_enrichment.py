@@ -63,6 +63,25 @@ def test_xuangu_parse_enriches_board_and_dividend_yield_from_tushare_when_source
     assert row['month_return'] == '39.05'
 
 
+def test_xuangu_parse_prefers_dynamic_and_plain_csv_columns(tmp_path):
+    csv_path = tmp_path / 'xuangu.csv'
+    csv_path.write_text(
+        '代码,名称,上市板块,最新价(元),市盈率(TTM)(倍),市净率(倍),年度股息率(%),区间涨跌幅(%)\n'
+        '603166,福达股份,主板,14.60,31.38,3.6164,0.6754,7.83\n',
+        encoding='utf-8-sig',
+    )
+    service = XuanguService()
+    service.data_center = _StubDataCenter()
+    parsed = service._parse({'csv_path': str(csv_path), 'description_path': '', 'raw_json': {}})
+    row = parsed['candidates'][0]
+    assert row['board'] == '主板'
+    assert row['latest_price'] == '14.60'
+    assert row['pe_ttm'] == '31.38'
+    assert row['pb'] == '3.6164'
+    assert row['dividend_yield'] == '0.6754'
+    assert row['month_return'] == '7.83'
+
+
 class _StubRunner(LowValueWorkflowRunner):
     def __init__(self, snapshot=None):
         super().__init__()
@@ -99,4 +118,4 @@ def test_watchlist_recompute_needs_persisted_base_factors():
         'st_flag': '否',
     }
     reason = runner._derive_entry_reason(candidate_data, ['分红催化'])
-    assert reason == 'PB 3.62；PE 31.38；股息率 0.68%；近1月 13.00%；催化: 分红催化'
+    assert reason == 'PB 3.62；PE 31.38；股息率 0.68%；近20交易日 13.00%；催化: 分红催化'

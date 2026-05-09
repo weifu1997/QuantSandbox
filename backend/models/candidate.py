@@ -8,6 +8,7 @@ from sqlalchemy import DateTime, Enum as SAEnum, ForeignKey, JSON, String, Text,
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from backend.db.base import Base
+from backend.utils.time import utcnow
 
 
 class CandidateStatus(str, Enum):
@@ -37,7 +38,7 @@ class Candidate(Base):
     )
     reason: Mapped[dict | list | str | None] = mapped_column(JSON, nullable=True)
     data: Mapped[dict | list | str | None] = mapped_column(JSON, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=False), nullable=False, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=False), nullable=False, default=utcnow)
 
     __table_args__ = (
         Index('idx_candidate_created_at', 'created_at'),
@@ -62,6 +63,6 @@ class CandidateReview(Base):
     )
     review_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     review_data: Mapped[dict | list | str | None] = mapped_column(JSON, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=False), nullable=False, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=False), nullable=False, default=utcnow)
 
     candidate: Mapped["Candidate"] = relationship("Candidate", back_populates="reviews")

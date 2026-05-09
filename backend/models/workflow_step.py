@@ -1,18 +1,20 @@
 from __future__ import annotations
 
 from datetime import datetime
-
+from datetime import datetime
 from sqlalchemy import DateTime, Enum as SAEnum, ForeignKey, JSON, String, Text, Index
 from sqlalchemy.orm import Mapped, mapped_column, relationship
+from uuid import uuid4
 
 from backend.db.base import Base
 from backend.models.workflow import WorkflowStepStatus
+from backend.utils.time import utcnow
 
 
 class WorkflowStepRun(Base):
     __tablename__ = "workflow_step_runs"
 
-    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
     workflow_run_id: Mapped[str] = mapped_column(
         String(36), ForeignKey("workflow_runs.id", ondelete="CASCADE"), nullable=False, index=True
     )
@@ -25,7 +27,7 @@ class WorkflowStepRun(Base):
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=False), nullable=True)
     result_data: Mapped[dict | list | str | None] = mapped_column(JSON, nullable=True)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=False), nullable=False, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=False), nullable=False, default=utcnow)
 
     __table_args__ = (
         Index('idx_workflow_step_created_at', 'created_at'),

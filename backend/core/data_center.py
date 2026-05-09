@@ -12,8 +12,11 @@ import requests
 import pandas as pd
 import akshare as ak
 import yaml
+import logging
 from datetime import datetime
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 
 class DataCenter:
@@ -42,7 +45,7 @@ class DataCenter:
         self.akshare_enabled = True
         self.cache_enabled = True
         self._load_data_source_config()
-        print(
+        logger.info(
             "🔧 [DataCenter] "
             f"TickFlow enabled={bool(self.tickflow_base_url and self.tickflow_api_key)} base_url={self.tickflow_base_url or 'EMPTY'} | "
             f"Tushare enabled={bool(self.tushare_base_url and self.tushare_token)} base_url={self.tushare_base_url or 'EMPTY'}"
@@ -78,7 +81,7 @@ class DataCenter:
             self.akshare_enabled = bool((ds.get("akshare", {}) or {}).get("enabled", True))
             self.cache_enabled = bool((ds.get("cache", {}) or {}).get("enabled", True))
         except Exception as e:
-            print(f"⚠️ [DataCenter] 读取数据源配置失败: {e}")
+            logger.warning(f"⚠️ [DataCenter] 读取数据源配置失败: {e}")
 
     def _clean_symbol(self, symbol: str) -> str:
         if symbol.startswith(("sh", "sz")):
@@ -270,7 +273,7 @@ class DataCenter:
                     except Exception:
                         continue
         except Exception as e:
-            print(f"⚠️ [DataCenter] 迁移旧缓存索引失败: {e}")
+            logger.warning(f"⚠️ [DataCenter] 迁移旧缓存索引失败: {e}")
 
     def _get_cache_record(self, symbol: str):
         """获取指定股票当前激活的缓存记录"""
@@ -417,7 +420,7 @@ class DataCenter:
         state["last_status"] = str(status or "")
         if state["fail_count"] >= 3:
             state["cooldown_until"] = time.time() + cooldown_seconds
-            print(f"⚠️ [DataCenter] {source} 进入冷却期 {cooldown_seconds}s")
+            logger.warning(f"⚠️ [DataCenter] {source} 进入冷却期 {cooldown_seconds}s")
 
     def _source_in_cooldown(self, source: str) -> bool:
         state = self._source_fail_state.setdefault(source, {"fail_count": 0, "cooldown_until": 0.0, "last_error": "", "last_status": ""})
@@ -472,50 +475,50 @@ class DataCenter:
 
         if self.tushare_base_url and self.tushare_token and not self._source_in_cooldown("tushare"):
             try:
-                print(f"🌐 [DataCenter] 正在从 Tushare 代理下载数据: {symbol} {start_date}-{end_date}...")
+                logger.info(f"🌐 [DataCenter] 正在从 Tushare 代理下载数据: {symbol} {start_date}-{end_date}...")
                 df = self._fetch_from_tushare_proxy(symbol, start_date=start_date, end_date=end_date)
                 if not df.empty:
                     self._mark_source_success("tushare")
                     df.attrs["data_source"] = "tushare"
                     return df, "tushare"
                 self._mark_source_failure("tushare")
-                print(f"⚠️ [DataCenter] Tushare 返回空数据，切换到 TickFlow: {symbol}")
+                logger.warning(f"⚠️ [DataCenter] Tushare 返回空数据，切换到 TickFlow: {symbol}")
             except Exception as e:
                 self._mark_source_failure("tushare", reason=repr(e), status="error")
-                print(f"⚠️ [DataCenter] Tushare 获取失败，切换到 TickFlow: {symbol}，原因: {e}")
+                logger.warning(f"⚠️ [DataCenter] Tushare 获取失败，切换到 TickFlow: {symbol}，原因: {e}")
         elif self.tushare_base_url and self.tushare_token:
-            print(f"⚠️ [DataCenter] Tushare 冷却中，跳过本次请求: {symbol}")
+            logger.warning(f"⚠️ [DataCenter] Tushare 冷却中，跳过本次请求: {symbol}")
 
         if self.tickflow_base_url and self.tickflow_api_key and not self._source_in_cooldown("tickflow"):
             try:
-                print(f"🌐 [DataCenter] 正在从 TickFlow 下载数据: {symbol} {start_date}-{end_date}...")
+                logger.info(f"🌐 [DataCenter] 正在从 TickFlow 下载数据: {symbol} {start_date}-{end_date}...")
                 df = self._fetch_from_tickflow(symbol, start_date=start_date, end_date=end_date)
                 if not df.empty:
                     self._mark_source_success("tickflow")
                     df.attrs["data_source"] = "tickflow"
                     return df, "tickflow"
                 self._mark_source_failure("tickflow", reason="TickFlow 返回空数据", status="empty")
-                print(f"⚠️ [DataCenter] TickFlow 返回空数据，切换到 AKShare: {symbol}")
+                logger.warning(f"⚠️ [DataCenter] TickFlow 返回空数据，切换到 AKShare: {symbol}")
             except urllib.error.HTTPError as e:
                 reason = f"HTTP {getattr(e, 'code', '')} {getattr(e, 'reason', '')}"
                 if getattr(e, 'code', None) == 403:
                     reason = "HTTP 403 Forbidden：TickFlow API Key 可能无权限或接口未开通"
                 self._mark_source_failure("tickflow", reason=reason, status=str(getattr(e, 'code', '')))
-                print(f"⚠️ [DataCenter] TickFlow 获取失败，切换到 AKShare: {symbol}，原因: {reason}")
+                logger.warning(f"⚠️ [DataCenter] TickFlow 获取失败，切换到 AKShare: {symbol}，原因: {reason}")
             except Exception as e:
                 self._mark_source_failure("tickflow", reason=repr(e), status="error")
-                print(f"⚠️ [DataCenter] TickFlow 获取失败，切换到 AKShare: {symbol}，原因: {e}")
+                logger.warning(f"⚠️ [DataCenter] TickFlow 获取失败，切换到 AKShare: {symbol}，原因: {e}")
         elif self.tickflow_base_url and self.tickflow_api_key:
-            print(f"⚠️ [DataCenter] TickFlow 冷却中，跳过本次请求: {symbol}")
+            logger.warning(f"⚠️ [DataCenter] TickFlow 冷却中，跳过本次请求: {symbol}")
 
         if not self.akshare_enabled:
             return pd.DataFrame(), "cache"
 
         clean_code = self._clean_symbol(symbol)
         if self._source_in_cooldown("akshare"):
-            print(f"⚠️ [DataCenter] AKShare 冷却中，跳过本次请求: {symbol}")
+            logger.warning(f"⚠️ [DataCenter] AKShare 冷却中，跳过本次请求: {symbol}")
             return pd.DataFrame(), "remote"
-        print(f"🌐 [DataCenter] 正在从东财下载新数据: {symbol} {start_date}-{end_date}...")
+        logger.info(f"🌐 [DataCenter] 正在从东财下载新数据: {symbol} {start_date}-{end_date}...")
 
         max_retries = 5
         new_df = pd.DataFrame()
@@ -533,7 +536,7 @@ class DataCenter:
             except Exception as e:
                 if attempt < max_retries - 1:
                     wait_time = (2 ** attempt) + random.uniform(1.0, 3.0)
-                    print(f"⚠️ 触发防爬限制。等待 {wait_time:.2f} 秒后进行第 {attempt + 1} 次重试...")
+                    logger.info(f"⚠️ 触发防爬限制。等待 {wait_time:.2f} 秒后进行第 {attempt + 1} 次重试...")
                     time.sleep(wait_time)
                 else:
                     self._mark_source_failure("akshare")
@@ -573,7 +576,7 @@ class DataCenter:
     def get_latest_trade_date(self) -> str:
         """直接返回今天日期，作为默认回测结束日"""
         latest = datetime.now().strftime("%Y%m%d")
-        print(f"🔎 [DataCenter] 最新交易日使用 today_date: {latest}")
+        logger.info(f"🔎 [DataCenter] 最新交易日使用 today_date: {latest}")
         return latest
 
     def _normalize_tushare_daily(self, df: pd.DataFrame) -> pd.DataFrame:
@@ -732,7 +735,7 @@ class DataCenter:
             cache_start = main_cache_record.get("start_date", "00000000")
             cache_end = main_cache_record.get("end_date", "00000000")
             if cache_start <= start_date and cache_end >= end_date:
-                print(f"📦 [DataCenter] 命中主缓存: {os.path.basename(main_cache_record['file_path'])}")
+                logger.info(f"📦 [DataCenter] 命中主缓存: {os.path.basename(main_cache_record['file_path'])}")
                 df = self._load_cache_df(main_cache_record["file_path"])
                 mask = (df['date'] >= pd.to_datetime(start_date)) & (df['date'] <= pd.to_datetime(end_date))
                 out = df.loc[mask].copy().reset_index(drop=True)
@@ -745,7 +748,7 @@ class DataCenter:
 
         # 2) 若主缓存存在但不完整，只计算缺失区间
         if not force_update and main_cache_record and os.path.exists(main_cache_record["file_path"]):
-            print(f"⚠️ [DataCenter] 主缓存未覆盖请求区间，尝试补齐: {symbol}")
+            logger.info(f"⚠️ [DataCenter] 主缓存未覆盖请求区间，尝试补齐: {symbol}")
             base_df = self._load_cache_df(main_cache_record["file_path"])
             if not base_df.empty and "date" in base_df.columns:
                 try:
@@ -832,3 +835,4 @@ class DataCenter:
         if cache_miss_note:
             out.attrs["fetch_note"] = cache_miss_note
         return out
+
