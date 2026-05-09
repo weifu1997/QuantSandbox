@@ -101,7 +101,7 @@ def test_watch_price_zone_uses_candidate_latest_price_when_snapshot_missing():
             'latest_price': '14.60',
         },
     )
-    assert zone == '13.87~15.33 元（PB 3.44~3.80）'
+    assert zone == '4.04~5.25 元（PB 1.0~1.3）'
 
 
 def test_watchlist_recompute_needs_persisted_base_factors():

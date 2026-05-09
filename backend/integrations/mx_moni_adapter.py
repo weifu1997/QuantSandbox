@@ -9,56 +9,20 @@ import subprocess
 from pathlib import Path
 from typing import Any, Dict
 
+from backend.integrations.common import load_mx_apikey, load_mx_api_url
+
 MX_MONI_DIR = Path(os.environ.get("MX_MONI_DIR", "/root/.openclaw/plugin-skills/mx-moni"))
 MX_MONI_SCRIPT = MX_MONI_DIR / "mx_moni.py"
 OUTPUT_DIR = Path("/root/.openclaw/workspace/mx_data/output")
 
 
-def _load_mx_apikey() -> str:
-    env_key = os.environ.get("MX_APIKEY", "").strip()
-    if env_key:
-        return env_key
-    for path in (Path.home() / ".profile", Path.home() / ".bashrc"):
-        if not path.exists():
-            continue
-        try:
-            for line in path.read_text(encoding="utf-8").splitlines():
-                line = line.strip()
-                if line.startswith("export MX_APIKEY="):
-                    value = line.split("=", 1)[1].strip().strip('"').strip("'")
-                    if value:
-                        return value
-        except Exception:
-            continue
-    return ""
-
-
-def _load_mx_api_url() -> str:
-    env_url = os.environ.get("MX_API_URL", "").strip()
-    if env_url:
-        return env_url
-    for path in (Path.home() / ".profile", Path.home() / ".bashrc"):
-        if not path.exists():
-            continue
-        try:
-            for line in path.read_text(encoding="utf-8").splitlines():
-                line = line.strip()
-                if line.startswith("export MX_API_URL="):
-                    value = line.split("=", 1)[1].strip().strip('"').strip("'")
-                    if value:
-                        return value
-        except Exception:
-            continue
-    return "https://mkapi2.dfcfs.com/finskillshub"
-
-
 def run_query(query: str, timeout: int = 120) -> Dict[str, Any]:
     env = os.environ.copy()
-    apikey = _load_mx_apikey()
+    apikey = load_mx_apikey()
     if not apikey:
         raise RuntimeError("MX_APIKEY 未设置")
     env["MX_APIKEY"] = apikey
-    env["MX_API_URL"] = _load_mx_api_url()
+    env["MX_API_URL"] = load_mx_api_url()
 
     proc = subprocess.run(
         ["python3", str(MX_MONI_SCRIPT), query],

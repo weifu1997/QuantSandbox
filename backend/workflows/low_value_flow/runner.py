@@ -10,7 +10,6 @@ from backend.models import (
     Candidate,
     CandidateReview,
     CandidateStatus,
-    RiskLevel,
     WatchlistEntry,
     WorkflowRun,
     WorkflowRunStatus,
@@ -27,30 +26,16 @@ from backend.repositories import (
 from backend.services.mx import DataService, SearchService, XuanguService, ZixuanService
 from backend.utils.time import utcnow
 from backend.workflows.common.batching import chunked
+from backend.workflows.low_value_flow.catalyst_extractor import CatalystExtractor
+from backend.workflows.low_value_flow.entry_reason_builder import EntryReasonBuilder
+from backend.workflows.low_value_flow.price_zone_builder import PriceZoneBuilder
+from backend.workflows.low_value_flow.risk_assessor import RiskAssessor
 from backend.workflows.low_value_flow.rules import should_reject_in_quick_risk, structure_decision_from_data
 from backend.workflows.low_value_flow.schemas import LowValueRunInput, build_default_query
 from backend.workflows.low_value_flow.serializer import review_result_from_status
 from backend.workflows.types import WorkflowType
 
 logger = logging.getLogger(__name__)
-
-CATALYST_KEYWORDS = {
-    "分红": "高分红",
-    "回购": "回购",
-    "增持": "增持",
-    "业绩": "业绩改善",
-    "预增": "业绩改善",
-    "扭亏": "业绩改善",
-    "中标": "订单催化",
-    "合同": "订单催化",
-    "涨价": "价格催化",
-    "景气": "行业景气",
-    "扩产": "产能扩张",
-    "新产能": "产能扩张",
-    "新品": "新品催化",
-    "创新药": "产品催化",
-    "改革": "改革催化",
-}
 
 
 class LowValueWorkflowRunner:
@@ -67,201 +52,33 @@ class LowValueWorkflowRunner:
         self.search_service = search_service or SearchService()
         self.zixuan_service = zixuan_service or ZixuanService()
         self.batch_size = batch_size
+        self.risk_assessor = RiskAssessor()
+        self.entry_reason_builder = EntryReasonBuilder(self.risk_assessor)
+        self.price_zone_builder = PriceZoneBuilder(self.data_service, self.risk_assessor)
+        self.catalyst_extractor = CatalystExtractor()
 
     @staticmethod
     def _safe_float(value: object) -> float | None:
-        try:
-            if value is None or value == "":
-                return None
-            s = str(value).replace('%', '').replace('元', '').replace('倍', '').replace(',', '').strip()
-            return float(s)
-        except Exception:
-            return None
+        return RiskAssessor.safe_float(value)
 
-    def _derive_risk_level(self, candidate_data: dict | None) -> RiskLevel:
-        data = candidate_data or {}
-        pb = self._safe_float(data.get('pb'))
-        pe = self._safe_float(data.get('pe_ttm'))
-        div = self._safe_float(data.get('dividend_yield'))
-        month_ret = self._safe_float(data.get('month_return'))
-
-        score = 0
-        if pb is not None:
-            if pb <= 1.0:
-                score += 1
-            elif pb >= 1.4:
-                score -= 1
-        if pe is not None:
-            if 0 < pe <= 15:
-                score += 1
-            elif pe >= 18:
-                score -= 1
-        if div is not None:
-            if div >= 3:
-                score += 1
-            elif div < 2:
-                score -= 1
-        if month_ret is not None:
-            if -15 <= month_ret <= -5:
-                score += 1
-            elif month_ret < -20:
-                score -= 2
-
-        if score >= 2:
-            return RiskLevel.LOW
-        if score <= -1:
-            return RiskLevel.HIGH
-        return RiskLevel.MEDIUM
+    def _derive_risk_level(self, candidate_data: dict | None):
+        return self.risk_assessor.derive_risk_level(candidate_data)
 
     @staticmethod
     def _derive_board(symbol: str, explicit_board: str | None = None) -> str:
-        board = str(explicit_board or '').strip()
-        if board and board not in {'SH', 'SZ'}:
-            return board
-        code = str(symbol or '').strip().lower()
-        if code.startswith(('sh', 'sz')):
-            code = code[2:]
-        if len(code) >= 2:
-            if code.startswith('68'):
-                return '科创板'
-            if code.startswith('30'):
-                return '创业板'
-            if code.startswith(('60', '00', '001', '002')):
-                return '主板'
-            if code.startswith(('4', '8', '92')):
-                return '北交所'
-        return board
+        return EntryReasonBuilder.derive_board(symbol, explicit_board)
 
     def _extract_latest_snapshot(self, sec_name: str, symbol: str) -> dict[str, float | str] | None:
-        query = f"{sec_name or symbol} 最新价 市净率"
-        try:
-            result = self.data_service.run(query, timeout=120)
-            raw = (result.parsed or {}).get('raw_json') if result.ok else None
-            data = ((raw or {}).get('data') or {}).get('data', {})
-            tables = ((data.get('searchDataResultDTO') or {}).get('dataTableDTOList') or [])
-            if not tables:
-                return None
-            table = tables[0]
-            raw_table = table.get('rawTable') or {}
-            name_map = table.get('nameMap') or {}
-            latest_price = None
-            latest_pb = None
-            dates = raw_table.get('headName') or []
-            for code, values in raw_table.items():
-                if code == 'headName' or not values:
-                    continue
-                label = name_map.get(code, '')
-                first = values[0]
-                if '收盘价' in label or '最新价' in label:
-                    latest_price = self._safe_float(first)
-                if '市净率' in label or label == 'PB' or 'PB' in label:
-                    latest_pb = self._safe_float(first)
-            if latest_price is None:
-                return None
-            return {
-                'price': latest_price,
-                'pb': latest_pb,
-                'date': dates[0] if dates else '',
-            }
-        except Exception as e:
-            logger.warning('fetch latest snapshot failed for %s %s: %s', sec_name, symbol, e)
-            return None
+        return self.price_zone_builder.extract_latest_snapshot(sec_name, symbol)
 
     def _derive_watch_price_zone(self, sec_name: str, symbol: str, candidate_data: dict | None) -> str:
-        data = candidate_data or {}
-        month_ret = self._safe_float(data.get('month_return'))
-        div = self._safe_float(data.get('dividend_yield'))
-        snapshot = self._extract_latest_snapshot(sec_name, symbol)
-
-        price = None
-        current_pb = None
-        if snapshot:
-            price = self._safe_float(snapshot.get('price'))
-            current_pb = self._safe_float(snapshot.get('pb'))
-
-        if price is None:
-            for key in ('latest_price', 'price', 'current_price', 'close_price', 'close'):
-                price = self._safe_float(data.get(key))
-                if price is not None:
-                    break
-        if current_pb is None:
-            for key in ('pb', 'pb_ratio', 'current_pb'):
-                current_pb = self._safe_float(data.get(key))
-                if current_pb is not None:
-                    break
-
-        if price is not None and current_pb is not None and current_pb > 0:
-            low_pb = current_pb * 0.95
-            high_pb = current_pb * 1.05
-            low_price = price * low_pb / current_pb
-            high_price = price * high_pb / current_pb
-            if low_price > high_price:
-                low_price, high_price = high_price, low_price
-            extra = []
-            if month_ret is not None and month_ret <= -10:
-                extra.append('回撤较深')
-            if div is not None and div >= 3:
-                extra.append('高股息')
-            suffix = f"（PB {low_pb:.2f}~{high_pb:.2f}）"
-            if extra:
-                suffix += '，' + ' / '.join(extra)
-            return f"{low_price:.2f}~{high_price:.2f} 元{suffix}"
-
-        # fallback when latest price unavailable — build zone-style description from hints
-        zone_parts: list[str] = []
-        if month_ret is not None:
-            if month_ret <= -10:
-                zone_parts.append('回撤后观察价格区间')
-            elif month_ret < 0:
-                zone_parts.append('现价附近观察价格区间')
-        if div is not None and div >= 3:
-            zone_parts.append('高股息支撑')
-        if not zone_parts:
-            return '现价附近观察价格区间'
-        return ' / '.join(zone_parts[:2])
+        return self.price_zone_builder.derive_watch_price_zone(sec_name, symbol, candidate_data)
 
     def _derive_catalyst_factors(self, search_review_data: dict | list | str | None) -> list[str]:
-        text_parts: list[str] = []
-        if isinstance(search_review_data, dict):
-            preview = search_review_data.get('preview')
-            if isinstance(preview, list):
-                text_parts.extend(str(x) for x in preview[:40])
-            else:
-                for v in search_review_data.values():
-                    if isinstance(v, list):
-                        text_parts.extend(str(x) for x in v[:20])
-                    elif isinstance(v, str):
-                        text_parts.append(v)
-        elif isinstance(search_review_data, list):
-            text_parts.extend(str(x) for x in search_review_data[:40])
-        elif isinstance(search_review_data, str):
-            text_parts.append(search_review_data)
-        text = '\n'.join(text_parts)
-
-        found: list[str] = []
-        for kw, label in CATALYST_KEYWORDS.items():
-            if kw in text and label not in found:
-                found.append(label)
-        return found[:4]
+        return self.catalyst_extractor.derive_catalyst_factors(search_review_data)
 
     def _derive_entry_reason(self, candidate_data: dict | None, catalysts: list[str]) -> str:
-        data = candidate_data or {}
-        parts: list[str] = []
-        pb = self._safe_float(data.get('pb'))
-        pe = self._safe_float(data.get('pe_ttm'))
-        div = self._safe_float(data.get('dividend_yield'))
-        month_ret = self._safe_float(data.get('month_return'))
-        if pb is not None:
-            parts.append(f'PB {pb:.2f}')
-        if pe is not None:
-            parts.append(f'PE {pe:.2f}')
-        if div is not None:
-            parts.append(f'股息率 {div:.2f}%')
-        if month_ret is not None:
-            parts.append(f'近1月 {month_ret:.2f}%')
-        if catalysts:
-            parts.append('催化: ' + ' / '.join(catalysts[:2]))
-        return '；'.join(parts) or '低估发现流入池'
+        return self.entry_reason_builder.derive_entry_reason(candidate_data, catalysts)
 
     def _load_candidate_reviews(self, candidate) -> dict[str, CandidateReview]:
         reviews = getattr(candidate, 'reviews', None) or []
