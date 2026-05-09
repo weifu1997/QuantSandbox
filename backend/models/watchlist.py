@@ -4,7 +4,7 @@ from datetime import datetime
 from enum import Enum
 from uuid import uuid4
 
-from sqlalchemy import DateTime, Enum as SAEnum, ForeignKey, JSON, String, Text, Index
+from sqlalchemy import DateTime, Enum as SAEnum, ForeignKey, JSON, String, Text, Index, Float
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from backend.db.base import Base
@@ -34,10 +34,15 @@ class WatchlistEntry(Base):
     catalyst_factors: Mapped[dict | list | str | None] = mapped_column(JSON, nullable=True)
     board: Mapped[str | None] = mapped_column(String(32), nullable=True)
     pe_ttm: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    pe_ttm_num: Mapped[float | None] = mapped_column(Float, nullable=True)
     pb: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    pb_num: Mapped[float | None] = mapped_column(Float, nullable=True)
     latest_price: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    latest_price_num: Mapped[float | None] = mapped_column(Float, nullable=True)
     dividend_yield: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    dividend_yield_num: Mapped[float | None] = mapped_column(Float, nullable=True)
     month_return: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    month_return_num: Mapped[float | None] = mapped_column(Float, nullable=True)
     st_flag: Mapped[str | None] = mapped_column(String(16), nullable=True)
     watch_price_zone: Mapped[str | None] = mapped_column(String(128), nullable=True)
     entry_date: Mapped[datetime] = mapped_column(DateTime(timezone=False), nullable=False, default=utcnow)

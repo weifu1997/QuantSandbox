@@ -81,6 +81,44 @@ def _ensure_watchlist_manual_fields() -> None:
                 conn.exec_driver_sql(f"ALTER TABLE watchlist_entries ADD COLUMN {column_name} {column_type}")
 
 
+def _ensure_watchlist_numeric_fields() -> None:
+    if not DB_URL.startswith("sqlite:///"):
+        return
+    with engine.begin() as conn:
+        columns = [row[1] for row in conn.exec_driver_sql("PRAGMA table_info(watchlist_entries)").fetchall()]
+        if not columns:
+            return
+        numeric_columns = {
+            'pe_ttm_num': 'REAL',
+            'pb_num': 'REAL',
+            'latest_price_num': 'REAL',
+            'dividend_yield_num': 'REAL',
+            'month_return_num': 'REAL',
+        }
+        for column_name, column_type in numeric_columns.items():
+            if column_name not in columns:
+                conn.exec_driver_sql(f"ALTER TABLE watchlist_entries ADD COLUMN {column_name} {column_type}")
+
+        backfill_pairs = [
+            ('pe_ttm', 'pe_ttm_num'),
+            ('pb', 'pb_num'),
+            ('latest_price', 'latest_price_num'),
+            ('dividend_yield', 'dividend_yield_num'),
+            ('month_return', 'month_return_num'),
+        ]
+        for text_col, num_col in backfill_pairs:
+            if text_col in columns:
+                conn.exec_driver_sql(
+                    f"""
+                    UPDATE watchlist_entries
+                    SET {num_col} = CAST({text_col} AS REAL)
+                    WHERE {num_col} IS NULL
+                      AND {text_col} IS NOT NULL
+                      AND TRIM({text_col}) != ''
+                    """
+                )
+
+
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, future=True, class_=Session)
 
 
@@ -89,6 +127,7 @@ def init_db() -> None:
     Base.metadata.create_all(bind=engine)
     _ensure_workflow_type_column()
     _ensure_watchlist_manual_fields()
+    _ensure_watchlist_numeric_fields()
 
 
 @contextmanager

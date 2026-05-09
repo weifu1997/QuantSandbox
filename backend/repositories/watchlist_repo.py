@@ -60,10 +60,15 @@ class WatchlistRepository(BaseRepository[WatchlistEntry]):
         watch_price_zone: str | None = None,
         board: str | None = None,
         pe_ttm: str | None = None,
+        pe_ttm_num: float | None = None,
         pb: str | None = None,
+        pb_num: float | None = None,
         latest_price: str | None = None,
+        latest_price_num: float | None = None,
         dividend_yield: str | None = None,
+        dividend_yield_num: float | None = None,
         month_return: str | None = None,
+        month_return_num: float | None = None,
         st_flag: str | None = None,
     ) -> WatchlistEntry:
         if entry_reason is not None:
@@ -78,14 +83,19 @@ class WatchlistRepository(BaseRepository[WatchlistEntry]):
             entry.board = board
         if pe_ttm is not None:
             entry.pe_ttm = pe_ttm
+            entry.pe_ttm_num = pe_ttm_num
         if pb is not None:
             entry.pb = pb
+            entry.pb_num = pb_num
         if latest_price is not None:
             entry.latest_price = latest_price
+            entry.latest_price_num = latest_price_num
         if dividend_yield is not None:
             entry.dividend_yield = dividend_yield
+            entry.dividend_yield_num = dividend_yield_num
         if month_return is not None:
             entry.month_return = month_return
+            entry.month_return_num = month_return_num
         if st_flag is not None:
             entry.st_flag = st_flag
         self.session.add(entry)

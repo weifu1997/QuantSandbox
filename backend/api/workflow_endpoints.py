@@ -88,6 +88,13 @@ def _serialize_watchlist(entry) -> dict[str, Any]:
         "dividend_yield": getattr(entry, 'dividend_yield', None),
         "month_return": getattr(entry, 'month_return', None),
         "st_flag": getattr(entry, 'st_flag', None),
+        "metrics": {
+            "pe_ttm": getattr(entry, 'pe_ttm_num', None),
+            "pb": getattr(entry, 'pb_num', None),
+            "latest_price": getattr(entry, 'latest_price_num', None),
+            "dividend_yield": getattr(entry, 'dividend_yield_num', None),
+            "month_return": getattr(entry, 'month_return_num', None),
+        },
         "watch_price_zone": entry.watch_price_zone,
         "entry_date": entry.entry_date.isoformat() if entry.entry_date else None,
         "created_at": entry.created_at.isoformat() if entry.created_at else None,
@@ -178,15 +185,20 @@ def get_watchlist_latest():
 
 
 def _candidate_data_from_watchlist_entry(entry) -> dict[str, Any]:
+    def _text_or_num(text_value: Any, num_value: Any) -> Any:
+        if text_value is not None and str(text_value).strip() != '':
+            return text_value
+        return num_value
+
     return {
         'symbol': entry.symbol,
         'name': entry.name,
         'board': getattr(entry, 'board', '') or '',
-        'pe_ttm': getattr(entry, 'pe_ttm', '') or '',
-        'pb': getattr(entry, 'pb', '') or '',
-        'latest_price': getattr(entry, 'latest_price', '') or '',
-        'dividend_yield': getattr(entry, 'dividend_yield', '') or '',
-        'month_return': getattr(entry, 'month_return', '') or '',
+        'pe_ttm': _text_or_num(getattr(entry, 'pe_ttm', ''), getattr(entry, 'pe_ttm_num', None)),
+        'pb': _text_or_num(getattr(entry, 'pb', ''), getattr(entry, 'pb_num', None)),
+        'latest_price': _text_or_num(getattr(entry, 'latest_price', ''), getattr(entry, 'latest_price_num', None)),
+        'dividend_yield': _text_or_num(getattr(entry, 'dividend_yield', ''), getattr(entry, 'dividend_yield_num', None)),
+        'month_return': _text_or_num(getattr(entry, 'month_return', ''), getattr(entry, 'month_return_num', None)),
         'st_flag': getattr(entry, 'st_flag', '否') or '否',
     }
 
@@ -195,9 +207,15 @@ def _has_complete_risk_inputs(data: dict[str, Any]) -> bool:
     required = ('pb', 'pe_ttm', 'month_return', 'dividend_yield')
     for key in required:
         value = data.get(key)
-        if value is None or str(value).strip() == '':
+        if value is None:
+            return False
+        if isinstance(value, str) and value.strip() == '':
             return False
     return True
+
+
+def _safe_metric_number(value: Any) -> float | None:
+    return _runner().risk_assessor.safe_float(value)
 
 
 @router.patch("/watchlist/{entry_id}")
@@ -238,15 +256,15 @@ def update_watchlist_entry(entry_id: str, payload: WatchlistUpdateRequest):
             catalyst_factors = entry.catalyst_factors
 
         if risk_level is None:
-            risk_level = _runner()._derive_risk_level(derived_data) if should_recompute else entry.risk_level
+            risk_level = _runner().risk_assessor.derive_risk_level(derived_data) if should_recompute else entry.risk_level
 
         entry_reason = payload.entry_reason
         if entry_reason is None:
-            entry_reason = _runner()._derive_entry_reason(derived_data, catalyst_factors) if should_recompute else entry.entry_reason
+            entry_reason = _runner().entry_reason_builder.derive_entry_reason(derived_data, catalyst_factors) if should_recompute else entry.entry_reason
 
         watch_price_zone = payload.watch_price_zone
         if watch_price_zone is None:
-            watch_price_zone = _runner()._derive_watch_price_zone(entry.name, entry.symbol, derived_data) if should_recompute else entry.watch_price_zone
+            watch_price_zone = _runner().price_zone_builder.derive_watch_price_zone(entry.name, entry.symbol, derived_data) if should_recompute else entry.watch_price_zone
 
         updated = watch_repo.update(
             entry,
@@ -256,10 +274,15 @@ def update_watchlist_entry(entry_id: str, payload: WatchlistUpdateRequest):
             watch_price_zone=watch_price_zone,
             board=payload.board,
             pe_ttm=payload.pe_ttm,
+            pe_ttm_num=_safe_metric_number(payload.pe_ttm) if payload.pe_ttm is not None else None,
             pb=payload.pb,
+            pb_num=_safe_metric_number(payload.pb) if payload.pb is not None else None,
             latest_price=payload.latest_price,
+            latest_price_num=_safe_metric_number(payload.latest_price) if payload.latest_price is not None else None,
             dividend_yield=payload.dividend_yield,
+            dividend_yield_num=_safe_metric_number(payload.dividend_yield) if payload.dividend_yield is not None else None,
             month_return=payload.month_return,
+            month_return_num=_safe_metric_number(payload.month_return) if payload.month_return is not None else None,
             st_flag=payload.st_flag,
         )
         return {"status": "success", "data": _serialize_watchlist(updated)}
