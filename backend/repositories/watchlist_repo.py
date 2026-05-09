@@ -70,6 +70,18 @@ class WatchlistRepository(BaseRepository[WatchlistEntry]):
         month_return: str | None = None,
         month_return_num: float | None = None,
         st_flag: str | None = None,
+        pool_group: str | None = None,
+        position_age: str | None = None,
+        left_side_grade: str | None = None,
+        stop_loss_price: float | None = None,
+        target_price: float | None = None,
+        buy_date = None,
+        time_circuit_breaker_start = None,
+        catalyst_signal: str | None = None,
+        exit_condition: str | None = None,
+        review_count: int | None = None,
+        last_review_at = None,
+        observation_note: str | None = None,
     ) -> WatchlistEntry:
         if entry_reason is not None:
             entry.entry_reason = entry_reason
@@ -98,6 +110,30 @@ class WatchlistRepository(BaseRepository[WatchlistEntry]):
             entry.month_return_num = month_return_num
         if st_flag is not None:
             entry.st_flag = st_flag
+        if pool_group is not None:
+            entry.pool_group = pool_group
+        if position_age is not None:
+            entry.position_age = position_age
+        if left_side_grade is not None:
+            entry.left_side_grade = left_side_grade
+        if stop_loss_price is not None:
+            entry.stop_loss_price = stop_loss_price
+        if target_price is not None:
+            entry.target_price = target_price
+        if buy_date is not None:
+            entry.buy_date = buy_date
+        if time_circuit_breaker_start is not None:
+            entry.time_circuit_breaker_start = time_circuit_breaker_start
+        if catalyst_signal is not None:
+            entry.catalyst_signal = catalyst_signal
+        if exit_condition is not None:
+            entry.exit_condition = exit_condition
+        if review_count is not None:
+            entry.review_count = review_count
+        if last_review_at is not None:
+            entry.last_review_at = last_review_at
+        if observation_note is not None:
+            entry.observation_note = observation_note
         self.session.add(entry)
         self.session.flush()
         return entry

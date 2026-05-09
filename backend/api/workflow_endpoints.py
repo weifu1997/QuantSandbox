@@ -5,7 +5,7 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query
 
-from backend.api.schemas import LowValueRunRequest, WatchlistUpdateRequest
+from backend.api.schemas import LeftSideRankRequest, LowValueRunRequest, VolumeVerifyRequest, WatchlistUpdateRequest
 from backend.db.session import session_scope
 from backend.models import RiskLevel
 from backend.repositories import (
@@ -15,6 +15,7 @@ from backend.repositories import (
     WorkflowStepRunRepository,
 )
 from backend.services.mx import DataService, SearchService, XuanguService, ZixuanService
+from backend.workflows.low_value_flow.logic_analyzer import LogicResult
 from backend.workflows.low_value_flow.runner import LowValueWorkflowRunner
 from backend.workflows.low_value_flow.schemas import LowValueRunInput
 
@@ -96,6 +97,18 @@ def _serialize_watchlist(entry) -> dict[str, Any]:
             "month_return": getattr(entry, 'month_return_num', None),
         },
         "watch_price_zone": entry.watch_price_zone,
+        "pool_group": getattr(entry, 'pool_group', None),
+        "position_age": getattr(entry, 'position_age', None),
+        "left_side_grade": getattr(entry, 'left_side_grade', None),
+        "stop_loss_price": getattr(entry, 'stop_loss_price', None),
+        "target_price": getattr(entry, 'target_price', None),
+        "buy_date": entry.buy_date.isoformat() if getattr(entry, 'buy_date', None) else None,
+        "time_circuit_breaker_start": entry.time_circuit_breaker_start.isoformat() if getattr(entry, 'time_circuit_breaker_start', None) else None,
+        "catalyst_signal": getattr(entry, 'catalyst_signal', None),
+        "exit_condition": getattr(entry, 'exit_condition', None),
+        "review_count": getattr(entry, 'review_count', 0),
+        "last_review_at": entry.last_review_at.isoformat() if getattr(entry, 'last_review_at', None) else None,
+        "observation_note": getattr(entry, 'observation_note', None),
         "entry_date": entry.entry_date.isoformat() if entry.entry_date else None,
         "created_at": entry.created_at.isoformat() if entry.created_at else None,
     }
@@ -284,8 +297,83 @@ def update_watchlist_entry(entry_id: str, payload: WatchlistUpdateRequest):
             month_return=payload.month_return,
             month_return_num=_safe_metric_number(payload.month_return) if payload.month_return is not None else None,
             st_flag=payload.st_flag,
+            pool_group=payload.pool_group,
+            position_age=payload.position_age,
+            left_side_grade=payload.left_side_grade,
+            stop_loss_price=payload.stop_loss_price,
+            target_price=payload.target_price,
+            buy_date=payload.buy_date,
+            time_circuit_breaker_start=payload.time_circuit_breaker_start,
+            catalyst_signal=payload.catalyst_signal,
+            exit_condition=payload.exit_condition,
+            review_count=payload.review_count,
+            last_review_at=payload.last_review_at,
+            observation_note=payload.observation_note,
         )
         return {"status": "success", "data": _serialize_watchlist(updated)}
+
+@router.post("/workflows/volume-verify")
+def volume_verify(payload: VolumeVerifyRequest):
+    runner = _runner()
+    rows = []
+    for candidate in payload.candidates:
+        result = runner.structure_verifier.verify(candidate)
+        rows.append({
+            'symbol': candidate.get('symbol'),
+            'passed': result.passed,
+            'score': result.score,
+            'volume_shrink': result.volume_shrink,
+            'data_insufficient_fields': result.data_insufficient_fields,
+            'reject_reason': result.reject_reason,
+        })
+    return {"status": "success", "data": rows}
+
+
+@router.post("/workflows/left-side-rank")
+def left_side_rank(payload: LeftSideRankRequest):
+    runner = _runner()
+    ranked = []
+    for candidate in payload.candidates:
+        logic = LogicResult(
+            verdict='pass',
+            why_cheap='',
+            why_fell='',
+            misjudgment_type=str(candidate.get('misjudgment_type', '') or '不确定'),
+            repair_logic=str(candidate.get('repair_logic', '') or ''),
+            catalyst_clarity='清晰' if candidate.get('catalyst_signal') else '不清晰',
+            risk_points=[],
+            data_insufficient=False,
+        )
+        pool_group = runner.pool_group_assigner.assign(candidate, logic).value
+        grade = 'C'
+        score = 0
+        pb = runner.risk_assessor.safe_float(candidate.get('pb'))
+        support_gap = runner.risk_assessor.safe_float(candidate.get('support_gap_pct'))
+        ma60_gap = runner.risk_assessor.safe_float(candidate.get('ma60_gap_pct'))
+        volume_shrink = candidate.get('volume_shrink')
+        if pb is not None and pb <= 1.0:
+            score += 1
+        if support_gap is not None and support_gap <= 5:
+            score += 1
+        if ma60_gap is not None and ma60_gap <= 5:
+            score += 1
+        if volume_shrink is True:
+            score += 1
+        if logic.catalyst_clarity == '清晰':
+            score += 1
+        if score >= 5:
+            grade = 'A'
+        elif score >= 3:
+            grade = 'B'
+        ranked.append({
+            'symbol': candidate.get('symbol'),
+            'left_side_grade': grade,
+            'pool_group': pool_group,
+            'score': score,
+        })
+    ranked.sort(key=lambda item: (item['left_side_grade'], -item['score']))
+    return {"status": "success", "data": ranked}
+
 
 @router.delete("/watchlist/{entry_id}")
 def delete_watchlist_entry(entry_id: str):

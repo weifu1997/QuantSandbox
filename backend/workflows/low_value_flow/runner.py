@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from uuid import uuid4
 import logging
 from typing import Any
@@ -27,11 +28,14 @@ from backend.utils.time import utcnow
 from backend.workflows.common.batching import chunked
 from backend.workflows.low_value_flow.catalyst_extractor import CatalystExtractor
 from backend.workflows.low_value_flow.entry_reason_builder import EntryReasonBuilder
+from backend.workflows.low_value_flow.logic_analyzer import LogicAnalyzer
+from backend.workflows.low_value_flow.pool_group_assigner import PoolGroupAssigner
 from backend.workflows.low_value_flow.price_zone_builder import PriceZoneBuilder
 from backend.workflows.low_value_flow.risk_assessor import RiskAssessor
-from backend.workflows.low_value_flow.rules import should_reject_in_quick_risk, structure_decision_from_data
+from backend.workflows.low_value_flow.rules import quick_risk_decision
 from backend.workflows.low_value_flow.schemas import LowValueRunInput, build_default_query
 from backend.workflows.low_value_flow.serializer import review_result_from_status
+from backend.workflows.low_value_flow.structure_verifier import StructureVerifier
 from backend.workflows.types import WorkflowType
 
 logger = logging.getLogger(__name__)
@@ -55,6 +59,9 @@ class LowValueWorkflowRunner:
         self.entry_reason_builder = EntryReasonBuilder(self.risk_assessor)
         self.price_zone_builder = PriceZoneBuilder(self.data_service, self.risk_assessor)
         self.catalyst_extractor = CatalystExtractor()
+        self.structure_verifier = StructureVerifier()
+        self.logic_analyzer = LogicAnalyzer()
+        self.pool_group_assigner = PoolGroupAssigner()
 
     def _load_candidate_reviews(self, candidate) -> dict[str, CandidateReview]:
         reviews = getattr(candidate, 'reviews', None) or []
@@ -170,17 +177,30 @@ class LowValueWorkflowRunner:
                 candidate = rows.get(symbol)
                 if not candidate:
                     continue
-                reject, reason = should_reject_in_quick_risk(item)
-                if reject:
+                risk_result = quick_risk_decision(item)
+                if risk_result.reject:
                     candidate.status = CandidateStatus.ELIMINATED
-                    candidate.reason = {'step': 'risk', 'reason': reason}
-                    rejected.append({'symbol': symbol, 'reason': reason})
+                    candidate.reason = {'step': 'risk', 'reason': risk_result.reason}
+                    rejected.append({'symbol': symbol, 'reason': risk_result.reason})
                     review_repo.create(
                         CandidateReview(
                             candidate_id=candidate.id,
                             step_code='risk',
                             review_result=review_result_from_status('fail'),
-                            review_reason=reason,
+                            review_reason=risk_result.reason,
+                            review_data=item,
+                        )
+                    )
+                elif risk_result.data_insufficient:
+                    candidate.status = CandidateStatus.INSUFFICIENT_DATA
+                    candidate.reason = {'step': 'risk', 'reason': risk_result.reason}
+                    rejected.append({'symbol': symbol, 'reason': risk_result.reason})
+                    review_repo.create(
+                        CandidateReview(
+                            candidate_id=candidate.id,
+                            step_code='risk',
+                            review_result=review_result_from_status('insufficient'),
+                            review_reason=risk_result.reason,
                             review_data=item,
                         )
                     )
@@ -211,20 +231,38 @@ class LowValueWorkflowRunner:
             rows = {c.symbol: c for c in cand_repo.list_by_workflow_run(run_id)}
             for batch in chunked(candidates, self.batch_size):
                 names = '、'.join([f"{x.get('name', '')}({x.get('symbol', '')})" for x in batch])
-                result = self.data_service.run(f"查询 {names} 的估值、股息率、近1月涨跌幅", timeout=180)
-                ok = result.ok
+                result = self.data_service.run(
+                    f"查询 {names} 的估值、股息率、近1月涨跌幅、10到15日换手率、3个月换手率、支撑位、前低、10日跌速、30日跌速、横盘区间、横盘天数、放量破位天数",
+                    timeout=180,
+                )
                 for item in batch:
                     symbol = str(item.get('symbol', '')).strip()
                     candidate = rows.get(symbol)
                     if not candidate:
                         continue
-                    if ok:
-                        candidate.status = CandidateStatus.SELECTED
-                        passed.append(item)
-                        review_repo.create(CandidateReview(candidate_id=candidate.id, step_code='data', review_result=review_result_from_status('pass'), review_reason='data_completed', review_data=result.parsed))
-                    else:
+                    merged_data = dict(item)
+                    if result.ok and isinstance(result.parsed, dict):
+                        merged_data.update(result.parsed)
+                    if not result.ok:
                         candidate.status = CandidateStatus.INSUFFICIENT_DATA
                         review_repo.create(CandidateReview(candidate_id=candidate.id, step_code='data', review_result=review_result_from_status('insufficient'), review_reason=result.error_message, review_data={}))
+                        continue
+                    structure = self.structure_verifier.verify(merged_data)
+                    if structure.passed:
+                        candidate.status = CandidateStatus.SELECTED
+                        candidate.data = merged_data
+                        passed.append(merged_data)
+                        review_repo.create(CandidateReview(candidate_id=candidate.id, step_code='data', review_result=review_result_from_status('pass'), review_reason=f'structure_score={structure.score}', review_data={
+                            'merged_data': merged_data,
+                            'structure': structure.__dict__,
+                        }))
+                    elif structure.data_insufficient_fields:
+                        candidate.status = CandidateStatus.INSUFFICIENT_DATA
+                        review_repo.create(CandidateReview(candidate_id=candidate.id, step_code='data', review_result=review_result_from_status('insufficient'), review_reason=structure.reject_reason, review_data=structure.__dict__))
+                    else:
+                        candidate.status = CandidateStatus.ELIMINATED
+                        candidate.reason = {'step': 'data', 'reason': structure.reject_reason}
+                        review_repo.create(CandidateReview(candidate_id=candidate.id, step_code='data', review_result=review_result_from_status('fail'), review_reason=structure.reject_reason, review_data=structure.__dict__))
         self._finish_step(step_id, WorkflowStepStatus.COMPLETED, result_data={'passed_count': len(passed)})
         return passed
 
@@ -245,13 +283,30 @@ class LowValueWorkflowRunner:
                     continue
                 query = f"{item.get('name', symbol)} 最近公告 业绩 分红 回购 增持 行业催化 风险点"
                 result = self.search_service.run(query, timeout=180)
-                if result.ok:
-                    candidate.status = CandidateStatus.SELECTED
-                    passed.append(item)
-                    review_repo.create(CandidateReview(candidate_id=candidate.id, step_code='search', review_result=review_result_from_status('pass'), review_reason='search_completed', review_data=result.parsed))
-                else:
+                if not result.ok:
                     candidate.status = CandidateStatus.INSUFFICIENT_DATA
                     review_repo.create(CandidateReview(candidate_id=candidate.id, step_code='search', review_result=review_result_from_status('insufficient'), review_reason=result.error_message, review_data={}))
+                    continue
+                search_data = result.parsed if isinstance(result.parsed, dict) else {}
+                logic = self.logic_analyzer.analyze(dict(candidate.data or item), search_data)
+                review_data = {'search': search_data, 'logic': logic.__dict__}
+                if logic.verdict == 'pass':
+                    candidate.status = CandidateStatus.SELECTED
+                    candidate.data = {**dict(candidate.data or {}), 'logic_result': logic.__dict__}
+                    passed.append(dict(candidate.data))
+                    review_repo.create(CandidateReview(candidate_id=candidate.id, step_code='search', review_result=review_result_from_status('pass'), review_reason='logic_passed', review_data=review_data))
+                elif logic.verdict == 'doubt':
+                    candidate.status = CandidateStatus.SELECTED
+                    candidate.data = {**dict(candidate.data or {}), 'logic_result': logic.__dict__}
+                    passed.append(dict(candidate.data))
+                    review_repo.create(CandidateReview(candidate_id=candidate.id, step_code='search', review_result=review_result_from_status('partial'), review_reason='logic_doubt', review_data=review_data))
+                elif logic.verdict == 'insufficient':
+                    candidate.status = CandidateStatus.INSUFFICIENT_DATA
+                    review_repo.create(CandidateReview(candidate_id=candidate.id, step_code='search', review_result=review_result_from_status('insufficient'), review_reason='logic_insufficient', review_data=review_data))
+                else:
+                    candidate.status = CandidateStatus.ELIMINATED
+                    candidate.reason = {'step': 'search', 'reason': logic.repair_logic or logic.why_fell or 'logic_eliminated'}
+                    review_repo.create(CandidateReview(candidate_id=candidate.id, step_code='search', review_result=review_result_from_status('fail'), review_reason='logic_eliminated', review_data=review_data))
         self._finish_step(step_id, WorkflowStepStatus.COMPLETED, result_data={'passed_count': len(passed)})
         return passed
 
@@ -275,9 +330,30 @@ class LowValueWorkflowRunner:
                 if result.ok and candidate:
                     reviews = self._load_candidate_reviews(candidate)
                     search_review = reviews.get('search')
+                    search_logic = ((getattr(search_review, 'review_data', None) or {}).get('logic') or {}) if search_review else {}
                     base_data = dict(candidate.data) if isinstance(candidate.data, dict) else dict(item)
                     base_data['board'] = self.entry_reason_builder.derive_board(symbol, base_data.get('board'))
                     catalyst_factors = self.catalyst_extractor.derive_catalyst_factors(getattr(search_review, 'review_data', None))
+                    logic_result = search_logic or (base_data.get('logic_result') if isinstance(base_data.get('logic_result'), dict) else {}) or {}
+                    logic_proxy = type('LogicProxy', (), {
+                        'verdict': logic_result.get('verdict', 'doubt'),
+                        'why_cheap': logic_result.get('why_cheap', ''),
+                        'why_fell': logic_result.get('why_fell', ''),
+                        'misjudgment_type': logic_result.get('misjudgment_type', '不确定'),
+                        'repair_logic': logic_result.get('repair_logic', ''),
+                        'catalyst_clarity': logic_result.get('catalyst_clarity', '不清晰'),
+                        'risk_points': logic_result.get('risk_points', []),
+                        'data_insufficient': logic_result.get('data_insufficient', False),
+                    })()
+                    pool_group = self.pool_group_assigner.assign(base_data, logic_proxy)
+                    price_zone = self.price_zone_builder.derive_watch_price_zone(name, symbol, base_data)
+                    risk_points = search_logic.get('risk_points') or []
+                    observation_note = {
+                        '低估理由': search_logic.get('why_cheap') or self.entry_reason_builder.derive_entry_reason(base_data, catalyst_factors),
+                        '当前风险': '; '.join(risk_points) if isinstance(risk_points, list) else str(risk_points or ''),
+                        '预期催化': search_logic.get('repair_logic') or '',
+                        '观察价位': price_zone,
+                    }
                     watch_repo.create(
                         WatchlistEntry(
                             workflow_run_id=run_id,
@@ -298,7 +374,11 @@ class LowValueWorkflowRunner:
                             month_return=str(base_data.get('month_return', '') or ''),
                             month_return_num=self.risk_assessor.safe_float(base_data.get('month_return')),
                             st_flag=str(base_data.get('st_flag', '') or ''),
-                            watch_price_zone=self.price_zone_builder.derive_watch_price_zone(name, symbol, base_data),
+                            watch_price_zone=price_zone,
+                            pool_group=pool_group.value,
+                            time_circuit_breaker_start=utcnow(),
+                            catalyst_signal=search_logic.get('catalyst_clarity') or None,
+                            observation_note=json.dumps(observation_note, ensure_ascii=False),
                         )
                     )
         has_failure = any(not x['ok'] for x in add_results)

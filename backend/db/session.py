@@ -44,6 +44,7 @@ if DB_URL.startswith("sqlite"):
         cursor.execute("PRAGMA foreign_keys=ON")
         cursor.close()
 
+
 def _ensure_workflow_type_column() -> None:
     if not DB_URL.startswith("sqlite:///"):
         return
@@ -111,12 +112,55 @@ def _ensure_watchlist_numeric_fields() -> None:
                 conn.exec_driver_sql(
                     f"""
                     UPDATE watchlist_entries
-                    SET {num_col} = CAST({text_col} AS REAL)
+                    SET {num_col} = CASE
+                        WHEN TRIM({text_col}) GLOB '-?[0-9]*.?[0-9]*' AND TRIM({text_col}) NOT IN ('', '-', '--', '.', '-.')
+                        THEN CAST({text_col} AS REAL)
+                        ELSE NULL
+                    END
                     WHERE {num_col} IS NULL
                       AND {text_col} IS NOT NULL
                       AND TRIM({text_col}) != ''
                     """
                 )
+
+
+def _ensure_watchlist_v31a_fields() -> None:
+    if not DB_URL.startswith("sqlite:///"):
+        return
+    with engine.begin() as conn:
+        columns = [row[1] for row in conn.exec_driver_sql("PRAGMA table_info(watchlist_entries)").fetchall()]
+        if not columns:
+            return
+        v31a_columns = {
+            'pool_group': 'VARCHAR(32)',
+            'position_age': 'VARCHAR(16)',
+            'left_side_grade': 'VARCHAR(8)',
+            'stop_loss_price': 'FLOAT',
+            'target_price': 'FLOAT',
+            'buy_date': 'DATETIME',
+            'time_circuit_breaker_start': 'DATETIME',
+            'catalyst_signal': 'VARCHAR(256)',
+            'exit_condition': 'VARCHAR(256)',
+            'review_count': 'INTEGER DEFAULT 0',
+            'last_review_at': 'DATETIME',
+            'observation_note': 'TEXT',
+        }
+        for column_name, column_type in v31a_columns.items():
+            if column_name not in columns:
+                conn.exec_driver_sql(f"ALTER TABLE watchlist_entries ADD COLUMN {column_name} {column_type}")
+
+        conn.exec_driver_sql(
+            """
+            UPDATE watchlist_entries
+            SET pool_group = COALESCE(NULLIF(pool_group, ''), 'depth_value'),
+                review_count = COALESCE(review_count, 0),
+                time_circuit_breaker_start = COALESCE(time_circuit_breaker_start, created_at)
+            WHERE pool_group IS NULL
+               OR pool_group = ''
+               OR review_count IS NULL
+               OR time_circuit_breaker_start IS NULL
+            """
+        )
 
 
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, future=True, class_=Session)
@@ -128,6 +172,7 @@ def init_db() -> None:
     _ensure_workflow_type_column()
     _ensure_watchlist_manual_fields()
     _ensure_watchlist_numeric_fields()
+    _ensure_watchlist_v31a_fields()
 
 
 @contextmanager

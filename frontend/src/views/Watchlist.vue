@@ -25,6 +25,12 @@
           <el-option label="中风险" value="medium" />
           <el-option label="高风险" value="high" />
         </el-select>
+        <el-select v-model="poolGroupFilter" placeholder="池分组" clearable style="width: 160px">
+          <el-option label="深度价值" value="depth_value" />
+          <el-option label="周期反转" value="cycle_reversal" />
+          <el-option label="高股息" value="high_dividend" />
+          <el-option label="冷门潜伏" value="obscure" />
+        </el-select>
         <el-radio-group v-model="watchlistView" size="small" class="view-toggle">
           <el-radio-button label="latest">当前视图</el-radio-button>
           <el-radio-button label="all">全部历史</el-radio-button>
@@ -51,6 +57,18 @@
           </template>
         </el-table-column>
         <el-table-column prop="entry_reason" label="入池理由" min-width="240" show-overflow-tooltip />
+        <el-table-column prop="pool_group" label="池分组" width="120" sortable>
+          <template #default="{ row }">
+            <el-tag size="small" effect="plain">{{ poolGroupLabel(row.pool_group) }}</el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column prop="left_side_grade" label="左侧评级" width="100" sortable>
+          <template #default="{ row }">
+            <span>{{ row.left_side_grade || '—' }}</span>
+          </template>
+        </el-table-column>
+        <el-table-column prop="review_count" label="复核次数" width="100" sortable />
+        <el-table-column prop="catalyst_signal" label="催化信号" width="120" show-overflow-tooltip />
         <el-table-column prop="catalyst_factors" label="催化因素" min-width="240" show-overflow-tooltip>
           <template #default="{ row }">
             <div v-if="normalizeCatalysts(row.catalyst_factors).length" class="tag-list">
@@ -119,6 +137,10 @@
             <el-tag :type="riskTag(selectedRow.risk_level)" size="small">{{ riskLabel(selectedRow.risk_level) }}</el-tag>
           </el-descriptions-item>
           <el-descriptions-item label="价格区间">{{ selectedRow.watch_price_zone || '-' }}</el-descriptions-item>
+          <el-descriptions-item label="池分组">{{ poolGroupLabel(selectedRow.pool_group) }}</el-descriptions-item>
+          <el-descriptions-item label="左侧评级">{{ selectedRow.left_side_grade || '-' }}</el-descriptions-item>
+          <el-descriptions-item label="催化信号">{{ selectedRow.catalyst_signal || '-' }}</el-descriptions-item>
+          <el-descriptions-item label="复核次数">{{ selectedRow.review_count ?? 0 }}</el-descriptions-item>
           <el-descriptions-item label="上市板块">{{ selectedRow.board || '-' }}</el-descriptions-item>
           <el-descriptions-item label="股息率(%)">{{ selectedRow.dividend_yield || '-' }}</el-descriptions-item>
           <el-descriptions-item label="PE TTM">{{ selectedRow.pe_ttm || '-' }}</el-descriptions-item>
@@ -153,7 +175,7 @@
         type="info"
         :closable="false"
         show-icon
-        title="这里只允许补充自动源不稳定的字段：上市板块、股息率。其余字段由系统自动拉取、计算和生成。"
+        title="这里允许补充和人工校准 v3.1a 字段，保存后会走 watchlist PATCH 接口。"
         class="edit-alert"
       />
       <el-form label-width="150px">
@@ -162,6 +184,30 @@
         </el-form-item>
         <el-form-item label="股息率(%)">
           <el-input v-model="editForm.dividend_yield" placeholder="如：0.6754" />
+        </el-form-item>
+        <el-form-item label="池分组">
+          <el-select v-model="editForm.pool_group" placeholder="选择池分组" clearable>
+            <el-option label="深度价值" value="depth_value" />
+            <el-option label="周期反转" value="cycle_reversal" />
+            <el-option label="高股息" value="high_dividend" />
+            <el-option label="冷门潜伏" value="obscure" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="左侧评级">
+          <el-select v-model="editForm.left_side_grade" placeholder="选择评级" clearable>
+            <el-option label="A" value="A" />
+            <el-option label="B" value="B" />
+            <el-option label="C" value="C" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="催化信号">
+          <el-input v-model="editForm.catalyst_signal" placeholder="如：明确/不清晰" />
+        </el-form-item>
+        <el-form-item label="复核次数">
+          <el-input-number v-model="editForm.review_count" :min="0" />
+        </el-form-item>
+        <el-form-item label="观察备注">
+          <el-input v-model="editForm.observation_note" type="textarea" :rows="3" placeholder="补充观察备注" />
         </el-form-item>
       </el-form>
       <template #footer>
@@ -174,7 +220,7 @@
 
 <script setup>
 import { ref, computed, onMounted, watch } from 'vue';
-import { getWatchlist, updateWatchlistEntry, batchDeleteWatchlist } from '../api';
+import { getWatchlist, updateWatchlistEntry, batchDeleteWatchlist, volumeVerify, leftSideRank } from '../api';
 import { ElMessage, ElMessageBox } from 'element-plus';
 
 const loading = ref(false);
@@ -183,6 +229,7 @@ const saving = ref(false);
 const allData = ref([]);
 const searchText = ref('');
 const riskFilter = ref('');
+const poolGroupFilter = ref('');
 const watchlistView = ref('latest');
 const detailVisible = ref(false);
 const editVisible = ref(false);
@@ -192,6 +239,11 @@ const editForm = ref({
   id: '',
   board: '',
   dividend_yield: '',
+  pool_group: '',
+  left_side_grade: '',
+  catalyst_signal: '',
+  review_count: 0,
+  observation_note: '',
 });
 
 const total = computed(() => allData.value.length);
@@ -205,6 +257,9 @@ const filteredData = computed(() => {
   if (riskFilter.value) {
     rows = rows.filter(r => r.risk_level === riskFilter.value);
   }
+  if (poolGroupFilter.value) {
+    rows = rows.filter(r => r.pool_group === poolGroupFilter.value);
+  }
   return rows;
 });
 
@@ -216,6 +271,16 @@ function riskTag(r) {
 function riskLabel(r) {
   const map = { low: '低风险', medium: '中风险', high: '高风险', unknown: '待评估' };
   return map[r] || r || '-';
+}
+
+function poolGroupLabel(value) {
+  const map = {
+    depth_value: '深度价值',
+    cycle_reversal: '周期反转',
+    high_dividend: '高股息',
+    obscure: '冷门潜伏',
+  };
+  return map[value] || value || '—';
 }
 
 function formatDate(t) {
@@ -249,6 +314,11 @@ function openEdit(row) {
     id: row.id,
     board: row.board || '',
     dividend_yield: row.dividend_yield || '',
+    pool_group: row.pool_group || '',
+    left_side_grade: row.left_side_grade || '',
+    catalyst_signal: row.catalyst_signal || '',
+    review_count: row.review_count ?? 0,
+    observation_note: row.observation_note || '',
   };
   editVisible.value = true;
 }
@@ -259,6 +329,11 @@ async function submitEdit() {
     const payload = {
       board: editForm.value.board,
       dividend_yield: editForm.value.dividend_yield,
+      pool_group: editForm.value.pool_group || null,
+      left_side_grade: editForm.value.left_side_grade || null,
+      catalyst_signal: editForm.value.catalyst_signal || null,
+      review_count: editForm.value.review_count ?? 0,
+      observation_note: editForm.value.observation_note || null,
     };
     await updateWatchlistEntry(editForm.value.id, payload);
     ElMessage.success('保存成功');

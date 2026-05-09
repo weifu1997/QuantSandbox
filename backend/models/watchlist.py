@@ -4,7 +4,7 @@ from datetime import datetime
 from enum import Enum
 from uuid import uuid4
 
-from sqlalchemy import DateTime, Enum as SAEnum, ForeignKey, JSON, String, Text, Index, Float
+from sqlalchemy import DateTime, Enum as SAEnum, ForeignKey, JSON, String, Text, Index, Float, Integer
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from backend.db.base import Base
@@ -16,6 +16,25 @@ class RiskLevel(str, Enum):
     MEDIUM = "medium"
     HIGH = "high"
     UNKNOWN = "unknown"
+
+
+class PoolGroup(str, Enum):
+    DEPTH_VALUE = "depth_value"
+    CYCLE_REVERSAL = "cycle_reversal"
+    HIGH_DIVIDEND = "high_dividend"
+    OBSCURE = "obscure"
+
+
+class PositionAge(str, Enum):
+    NEW = "new"
+    MATURE = "mature"
+
+
+class LeftSideGrade(str, Enum):
+    A = "A"
+    B = "B"
+    C = "C"
+    NONE = "none"
 
 
 class WatchlistEntry(Base):
@@ -45,6 +64,18 @@ class WatchlistEntry(Base):
     month_return_num: Mapped[float | None] = mapped_column(Float, nullable=True)
     st_flag: Mapped[str | None] = mapped_column(String(16), nullable=True)
     watch_price_zone: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    pool_group: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    position_age: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    left_side_grade: Mapped[str | None] = mapped_column(String(8), nullable=True)
+    stop_loss_price: Mapped[float | None] = mapped_column(Float, nullable=True)
+    target_price: Mapped[float | None] = mapped_column(Float, nullable=True)
+    buy_date: Mapped[datetime | None] = mapped_column(DateTime(timezone=False), nullable=True)
+    time_circuit_breaker_start: Mapped[datetime | None] = mapped_column(DateTime(timezone=False), nullable=True)
+    catalyst_signal: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    exit_condition: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    review_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    last_review_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=False), nullable=True)
+    observation_note: Mapped[str | None] = mapped_column(Text, nullable=True)
     entry_date: Mapped[datetime] = mapped_column(DateTime(timezone=False), nullable=False, default=utcnow)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=False), nullable=False, default=utcnow)
 
@@ -53,4 +84,3 @@ class WatchlistEntry(Base):
     )
 
     workflow_run: Mapped["WorkflowRun"] = relationship("WorkflowRun", back_populates="watchlist_entries")
-

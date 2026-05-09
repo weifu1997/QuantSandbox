@@ -18,6 +18,7 @@ def candidate_status_from_logic(label: str) -> CandidateStatus:
 def review_result_from_status(status: str) -> CandidateReviewResult:
     mapping = {
         "pass": CandidateReviewResult.PASS,
+        "partial": CandidateReviewResult.PASS,
         "fail": CandidateReviewResult.FAIL,
         "insufficient": CandidateReviewResult.INSUFFICIENT,
     }

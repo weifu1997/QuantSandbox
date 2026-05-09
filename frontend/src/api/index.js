@@ -74,4 +74,12 @@ export const batchDeleteWatchlist = (ids) => {
   return api.post('/watchlist/batch-delete', { ids });
 };
 
+export const volumeVerify = (payload) => {
+  return api.post('/workflows/volume-verify', payload);
+};
+
+export const leftSideRank = (payload) => {
+  return api.post('/workflows/left-side-rank', payload);
+};
+
 export default api;
