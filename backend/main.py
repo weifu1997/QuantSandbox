@@ -1,4 +1,5 @@
 import logging
+import os
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -12,12 +13,23 @@ from backend.repositories import WorkflowRunRepository, WorkflowStepRunRepositor
 
 app = FastAPI(title="Quant Simulate System API")
 
+
+def _cors_origins() -> list[str]:
+    raw = os.environ.get("QUANTSANDBOX_CORS_ORIGINS", "").strip()
+    if raw:
+        return [origin.strip() for origin in raw.split(",") if origin.strip()]
+    return [
+        "http://127.0.0.1:5173",
+        "http://localhost:5173",
+    ]
+
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=_cors_origins(),
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type", "Accept"],
 )
 
 app.include_router(workflow_router)
