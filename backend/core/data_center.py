@@ -10,7 +10,10 @@ import urllib.error
 import urllib.parse
 import requests
 import pandas as pd
-import akshare as ak
+try:
+    import akshare as ak
+except ImportError:
+    ak = None
 import yaml
 import logging
 from datetime import datetime
@@ -513,6 +516,10 @@ class DataCenter:
 
         if not self.akshare_enabled:
             return pd.DataFrame(), "cache"
+
+        if ak is None:
+            logger.warning("⚠️ [DataCenter] akshare 未安装，跳过 AKShare 数据源")
+            return pd.DataFrame(), "remote"
 
         clean_code = self._clean_symbol(symbol)
         if self._source_in_cooldown("akshare"):

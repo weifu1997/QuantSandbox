@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import tempfile
 from pathlib import Path
+from functools import lru_cache
 
 import pandas as pd
 import yaml
@@ -12,13 +13,17 @@ from pydantic import BaseModel
 from backend.core.data_center import DataCenter
 
 router = APIRouter(prefix="/api", tags=["config"])
-dc = DataCenter()
 
 
 class ConfigUpdateRequest(BaseModel):
     stock_pool: list[str] | None = None
     strategy_name: str | None = None
     strategy_parameters: dict | None = None
+
+
+@lru_cache(maxsize=1)
+def get_data_center() -> DataCenter:
+    return DataCenter()
 
 
 def load_config() -> dict:
@@ -68,6 +73,7 @@ def update_config(payload: ConfigUpdateRequest):
 
 @router.get("/meta", summary="获取系统元信息")
 def get_meta():
+    dc = get_data_center()
     latest_trade_date = dc.get_latest_trade_date()
     return {
         "status": "success",

@@ -1,0 +1,10 @@
+fastapi
+uvicorn
+sqlalchemy
+pydantic
+pandas
+numpy
+requests
+PyYAML
+akshare
+python-multipart

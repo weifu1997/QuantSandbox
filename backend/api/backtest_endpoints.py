@@ -5,7 +5,7 @@ import asyncio
 import pandas as pd
 from fastapi import APIRouter, HTTPException
 
-from backend.api.config_endpoints import dc, load_config
+from backend.api.config_endpoints import get_data_center, load_config
 from backend.core.engine import BacktestEngine
 from backend.core.strategy import StrategyFactory
 
@@ -21,6 +21,7 @@ def _resolve_strategy_label(strategy_name: str) -> str:
 
 
 async def fetch_stock_data_with_timeout(symbol: str, start_date: str, end_date: str, timeout: int = 20):
+    dc = get_data_center()
     return await asyncio.wait_for(
         asyncio.to_thread(dc.fetch_stock_data, symbol, start_date, end_date),
         timeout=timeout,
@@ -42,7 +43,7 @@ def _resolve_stock_name(df: pd.DataFrame, ticker: str) -> str:
         if name:
             return name
     try:
-        name = str(dc.get_stock_name(ticker) or "").strip()
+        name = str(get_data_center().get_stock_name(ticker) or "").strip()
         if name:
             return name
     except Exception:
