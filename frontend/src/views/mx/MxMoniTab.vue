@@ -158,8 +158,8 @@ const extractMoni = (rawJson) => {
         stockName: pos.stockName || pos.secName || pos.securityName || '',
         marketValue: formatNumber(pos.marketValue ?? pos.stockValue ?? pos.currentValue ?? pos.marketVal),
         profit: formatNumber(pos.profit ?? pos.floatProfit ?? pos.floatProfitLoss ?? pos.unrealizedPnl),
-        availableQty: pos.availableQty ?? pos.availableVol ?? pos.canSellQty ?? pos.canUseQty ?? '',
-        qty: pos.qty ?? pos.volume ?? pos.holdQty ?? pos.totalQty ?? '',
+        availableQty: pos.availableQty ?? pos.availableVol ?? pos.canSellQty ?? pos.canUseQty ?? pos.availCount ?? '',
+        qty: pos.qty ?? pos.volume ?? pos.holdQty ?? pos.totalQty ?? pos.count ?? '',
       }))
     : [];
 
