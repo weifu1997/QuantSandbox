@@ -9,7 +9,7 @@ import subprocess
 from pathlib import Path
 from typing import Any, Dict
 
-MX_MONI_DIR = Path("/root/.openclaw/workspace/skills/mx-moni")
+MX_MONI_DIR = Path(os.environ.get("MX_MONI_DIR", "/root/.openclaw/plugin-skills/mx-moni"))
 MX_MONI_SCRIPT = MX_MONI_DIR / "mx_moni.py"
 OUTPUT_DIR = Path("/root/.openclaw/workspace/mx_data/output")
 

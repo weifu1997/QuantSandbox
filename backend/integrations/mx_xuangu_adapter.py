@@ -9,7 +9,7 @@ import subprocess
 from pathlib import Path
 from typing import Any, Dict
 
-MX_XUANGU_DIR = Path("/root/.openclaw/workspace/skills/mx-xuangu")
+MX_XUANGU_DIR = Path(os.environ.get("MX_XUANGU_DIR", "/root/.openclaw/plugin-skills/mx-xuangu"))
 MX_XUANGU_SCRIPT = MX_XUANGU_DIR / "mx_xuangu.py"
 OUTPUT_DIR = Path("/root/.openclaw/workspace/mx_data/output")
 

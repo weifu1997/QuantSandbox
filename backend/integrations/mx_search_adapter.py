@@ -9,7 +9,7 @@ import subprocess
 from pathlib import Path
 from typing import Any, Dict
 
-MX_SEARCH_DIR = Path("/root/.openclaw/workspace/skills/mx-search")
+MX_SEARCH_DIR = Path(os.environ.get("MX_SEARCH_DIR", "/root/.openclaw/plugin-skills/mx-search"))
 MX_SEARCH_SCRIPT = MX_SEARCH_DIR / "mx_search.py"
 OUTPUT_DIR = Path("/root/.openclaw/workspace/mx_data/output")
 

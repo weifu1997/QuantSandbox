@@ -33,4 +33,41 @@ export const updateConfig = (payload) => {
   return api.post('/config', payload);
 };
 
+// ===== 工作流 API =====
+export const runLowValueWorkflow = (payload) => {
+  return api.post('/workflows/low-value/run', payload);
+};
+
+export const listWorkflowRuns = (params = {}) => {
+  return api.get('/workflows', { params });
+};
+
+export const getWorkflowRun = (runId) => {
+  return api.get(`/workflows/${runId}`);
+};
+
+export const getWorkflowStep = (runId, stepCode) => {
+  return api.get(`/workflows/${runId}/steps/${stepCode}`);
+};
+
+export const getWorkflowCandidates = (runId, status) => {
+  return api.get(`/workflows/${runId}/candidates`, { params: status ? { status } : {} });
+};
+
+export const getWatchlist = () => {
+  return api.get('/watchlist');
+};
+
+export const updateWatchlistEntry = (entryId, payload) => {
+  return api.patch(`/watchlist/${entryId}`, payload);
+};
+
+export const deleteWatchlistEntry = (entryId) => {
+  return api.delete(`/watchlist/${entryId}`);
+};
+
+export const batchDeleteWatchlist = (ids) => {
+  return api.post('/watchlist/batch-delete', { ids });
+};
+
 export default api;

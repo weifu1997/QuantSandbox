@@ -1,0 +1,212 @@
+from __future__ import annotations
+
+import threading
+from typing import Any
+
+from fastapi import APIRouter, HTTPException, Query
+
+from backend.api.schemas import LowValueRunRequest, WatchlistUpdateRequest
+from backend.db.session import session_scope
+from backend.models import RiskLevel
+from backend.repositories import (
+    CandidateRepository,
+    WatchlistRepository,
+    WorkflowRunRepository,
+    WorkflowStepRunRepository,
+)
+from backend.services.mx import DataService, SearchService, XuanguService, ZixuanService
+from backend.workflows.low_value_flow.runner import LowValueWorkflowRunner
+from backend.workflows.low_value_flow.schemas import LowValueRunInput
+
+router = APIRouter(prefix="/api", tags=["workflow"])
+
+
+def _runner(batch_size: int = 5) -> LowValueWorkflowRunner:
+    return LowValueWorkflowRunner(
+        xuangu_service=XuanguService(),
+        data_service=DataService(),
+        search_service=SearchService(),
+        zixuan_service=ZixuanService(),
+        batch_size=batch_size,
+    )
+
+
+def _serialize_run(run) -> dict[str, Any]:
+    return {
+        "id": run.id,
+        "user_id": run.user_id,
+        "status": run.status.value if hasattr(run.status, "value") else str(run.status),
+        "started_at": run.started_at.isoformat() if run.started_at else None,
+        "completed_at": run.completed_at.isoformat() if run.completed_at else None,
+        "total_steps": run.total_steps,
+        "config": run.config,
+        "created_at": run.created_at.isoformat() if run.created_at else None,
+        "updated_at": run.updated_at.isoformat() if run.updated_at else None,
+    }
+
+
+def _serialize_step(step) -> dict[str, Any]:
+    return {
+        "id": step.id,
+        "workflow_run_id": step.workflow_run_id,
+        "step_code": step.step_code,
+        "step_name": step.step_name,
+        "status": step.status.value if hasattr(step.status, "value") else str(step.status),
+        "started_at": step.started_at.isoformat() if step.started_at else None,
+        "completed_at": step.completed_at.isoformat() if step.completed_at else None,
+        "result_data": step.result_data,
+        "error_message": step.error_message,
+    }
+
+
+def _serialize_candidate(candidate) -> dict[str, Any]:
+    return {
+        "id": candidate.id,
+        "symbol": candidate.symbol,
+        "name": candidate.name,
+        "status": candidate.status.value if hasattr(candidate.status, "value") else str(candidate.status),
+        "reason": candidate.reason,
+        "data": candidate.data,
+        "created_at": candidate.created_at.isoformat() if candidate.created_at else None,
+    }
+
+
+def _serialize_watchlist(entry) -> dict[str, Any]:
+    return {
+        "id": entry.id,
+        "workflow_run_id": entry.workflow_run_id,
+        "symbol": entry.symbol,
+        "name": entry.name,
+        "entry_reason": entry.entry_reason,
+        "risk_level": entry.risk_level.value if hasattr(entry.risk_level, "value") else str(entry.risk_level),
+        "catalyst_factors": entry.catalyst_factors,
+        "watch_price_zone": entry.watch_price_zone,
+        "entry_date": entry.entry_date.isoformat() if entry.entry_date else None,
+        "created_at": entry.created_at.isoformat() if entry.created_at else None,
+    }
+
+
+@router.post("/workflows/low-value/run")
+def run_low_value(payload: LowValueRunRequest):
+    runner = _runner(batch_size=payload.batch_size)
+    run_input = LowValueRunInput(
+        use_default_template=payload.use_default_template,
+        custom_query=payload.custom_query,
+        user_id=payload.user_id,
+    )
+    run_id = runner.create_run(run_input)
+    threading.Thread(target=_run_workflow_async, args=(runner, run_input, run_id), daemon=True).start()
+    return {"status": "success", "run_id": run_id}
+
+
+def _run_workflow_async(runner: LowValueWorkflowRunner, run_input: LowValueRunInput, run_id: str):
+    runner.execute_steps(run_input, run_id)
+
+
+@router.get("/workflows")
+def list_workflow_runs(limit: int = Query(default=20, ge=1, le=100), status: str | None = None, user_id: str | None = None):
+    with session_scope() as s:
+        run_repo = WorkflowRunRepository(s)
+        runs = run_repo.list_recent(limit=limit, status=status, user_id=user_id)
+        return {"status": "success", "data": [_serialize_run(run) for run in runs]}
+
+
+@router.get("/workflows/{run_id}")
+def get_workflow_run(run_id: str):
+    with session_scope() as s:
+        run_repo = WorkflowRunRepository(s)
+        step_repo = WorkflowStepRunRepository(s)
+        cand_repo = CandidateRepository(s)
+        watch_repo = WatchlistRepository(s)
+
+        run = run_repo.get(run_id)
+        if not run:
+            raise HTTPException(status_code=404, detail="workflow run not found")
+
+        return {
+            "status": "success",
+            "data": {
+                "run": _serialize_run(run),
+                "steps": [_serialize_step(st) for st in step_repo.list_by_workflow_run(run_id)],
+                "candidates": [_serialize_candidate(c) for c in cand_repo.list_by_workflow_run(run_id)],
+                "watchlist": [_serialize_watchlist(w) for w in watch_repo.list_by_workflow_run(run_id)],
+            },
+        }
+
+
+@router.get("/workflows/{run_id}/steps/{step_code}")
+def get_workflow_step(run_id: str, step_code: str):
+    with session_scope() as s:
+        step_repo = WorkflowStepRunRepository(s)
+        steps = step_repo.list_by_workflow_run(run_id)
+        step = next((st for st in steps if st.step_code == step_code), None)
+        if not step:
+            raise HTTPException(status_code=404, detail="workflow step not found")
+        return {"status": "success", "data": _serialize_step(step)}
+
+
+@router.get("/workflows/{run_id}/candidates")
+def get_workflow_candidates(run_id: str, status: str | None = None):
+    with session_scope() as s:
+        cand_repo = CandidateRepository(s)
+        rows = cand_repo.list_by_status(run_id, status) if status else cand_repo.list_by_workflow_run(run_id)
+        return {"status": "success", "data": [_serialize_candidate(c) for c in rows]}
+
+
+@router.get("/watchlist")
+def get_watchlist():
+    with session_scope() as s:
+        watch_repo = WatchlistRepository(s)
+        rows = watch_repo.list_all()
+        return {"status": "success", "data": [_serialize_watchlist(w) for w in rows]}
+
+
+@router.patch("/watchlist/{entry_id}")
+def update_watchlist_entry(entry_id: str, payload: WatchlistUpdateRequest):
+    with session_scope() as s:
+        watch_repo = WatchlistRepository(s)
+        entry = watch_repo.get(entry_id)
+        if not entry:
+            raise HTTPException(status_code=404, detail="watchlist entry not found")
+
+        risk_level = None
+        if payload.risk_level is not None:
+            try:
+                risk_level = RiskLevel(payload.risk_level)
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail="invalid risk_level") from exc
+
+        catalyst_factors = payload.catalyst_factors
+        if isinstance(catalyst_factors, str):
+            catalyst_factors = [item.strip() for item in catalyst_factors.split("、") if item.strip()]
+
+        updated = watch_repo.update(
+            entry,
+            entry_reason=payload.entry_reason,
+            risk_level=risk_level,
+            catalyst_factors=catalyst_factors,
+            watch_price_zone=payload.watch_price_zone,
+        )
+        return {"status": "success", "data": _serialize_watchlist(updated)}
+
+
+@router.delete("/watchlist/{entry_id}")
+def delete_watchlist_entry(entry_id: str):
+    with session_scope() as s:
+        watch_repo = WatchlistRepository(s)
+        entry = watch_repo.get(entry_id)
+        if not entry:
+            raise HTTPException(status_code=404, detail="watchlist entry not found")
+        watch_repo.delete(entry)
+        return {"status": "success", "deleted": 1}
+
+
+@router.post("/watchlist/batch-delete")
+def batch_delete_watchlist(payload: dict):
+    entry_ids = payload.get("ids", [])
+    if not entry_ids:
+        raise HTTPException(status_code=400, detail="ids is required")
+    with session_scope() as s:
+        watch_repo = WatchlistRepository(s)
+        deleted = watch_repo.delete_by_ids(entry_ids)
+        return {"status": "success", "deleted": deleted}

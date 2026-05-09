@@ -177,7 +177,11 @@ const renderSlice = () => {
   if (currentKlines.length > 0) {
     const lastVisibleKey = currentKlines[currentKlines.length - 1].timeKey || normalizeDateKey(currentKlines[currentKlines.length - 1].time);
     const currentMarkers = fullMarkers.filter(m => normalizeDateKey(m.timeKey || m.time) <= lastVisibleKey);
-    candlestickSeries.setMarkers(currentMarkers);
+    if (typeof candlestickSeries.setMarkers === 'function') {
+      candlestickSeries.setMarkers(currentMarkers);
+    } else if (typeof candlestickSeries.createPriceLine === 'function') {
+      // lightweight-charts 某些版本/API 组合下没有 setMarkers，先静默降级，避免整页渲染失败
+    }
 
     // 3. 动态更新日志表格
     visibleLogs.value = fullLogs.filter(log => normalizeDateKey(log.execution_date) <= lastVisibleKey);

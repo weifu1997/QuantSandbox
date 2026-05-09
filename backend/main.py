@@ -1,19 +1,26 @@
 import os
-import asyncio
 import tempfile
 import yaml
 import pandas as pd
-from pydantic import BaseModel
-from fastapi import FastAPI, HTTPException, BackgroundTasks
+from pathlib import Path
+import asyncio
+
+import logging
+from datetime import datetime
+from uuid import uuid4
+from typing import Any
+
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
 
 from backend.core.data_center import DataCenter
+from backend.api.workflow_endpoints import router as workflow_router
+from backend.api.schemas import MXQueryRequest
 from backend.core.engine import BacktestEngine
 from backend.core.strategy import StrategyFactory
-from backend.integrations.mx_search_adapter import run_query as run_mx_search_query
-from backend.integrations.mx_data_adapter import run_query as run_mx_data_query
-from backend.integrations.mx_xuangu_adapter import run_query as run_mx_xuangu_query
-from backend.integrations.mx_moni_adapter import run_query as run_mx_moni_query
+from backend.services.mx import DataService, SearchService, XuanguService
+from backend.services.mx.zixuan_service import MoniService
 
 app = FastAPI(title="Quant Simulate System API")
 
@@ -28,6 +35,7 @@ app.add_middleware(
 
 # 实例化数据中心
 dc = DataCenter()
+app.include_router(workflow_router)
 
 class ConfigUpdateRequest(BaseModel):
     stock_pool: list[str] | None = None
@@ -42,7 +50,7 @@ def load_config():
         return yaml.safe_load(f)
 
 
-@app.get("/api/config", summary="获取回测配置")
+@ app.get("/api/config", summary="获取回测配置")
 def get_config():
     config = load_config()
     return {
@@ -52,7 +60,7 @@ def get_config():
     }
 
 
-@app.post("/api/config", summary="更新回测配置")
+@ app.post("/api/config", summary="更新回测配置")
 def update_config(payload: ConfigUpdateRequest):
     config = load_config()
     if payload.stock_pool is not None:
@@ -63,6 +71,7 @@ def update_config(payload: ConfigUpdateRequest):
         config.setdefault("strategy", {})["parameters"] = payload.strategy_parameters
     save_config(config)
     return {"status": "success"}
+
 
 def clean_nan(df: pd.DataFrame) -> list:
     """清理 DataFrame 中的 NaN 值，防止 JSON 序列化报错"""
@@ -81,7 +90,8 @@ def save_config(config: dict):
         if os.path.exists(tmp_path):
             os.remove(tmp_path)
 
-@app.get("/api/meta", summary="获取系统元信息")
+
+@ app.get("/api/meta", summary="获取系统元信息")
 def get_meta():
     latest_trade_date = dc.get_latest_trade_date()
     return {
@@ -90,6 +100,205 @@ def get_meta():
         "data_sources": dc.get_source_status(),
         "priority": dc.get_source_priority(),
     }
+
+def _mx_response(result):
+    if not result.ok:
+        raise HTTPException(status_code=500, detail=result.error_message or f"{result.tool} 执行失败")
+    return {
+        "status": "success",
+        "tool": result.tool,
+        "query": result.query,
+        "stdout": result.raw.get("stdout", "") if isinstance(result.raw, dict) else "",
+        "raw_json": result.raw.get("raw_json") if isinstance(result.raw, dict) else None,
+        "warnings": result.warnings,
+        **(result.raw if isinstance(result.raw, dict) else {}),
+        "parsed": result.parsed,
+    }
+
+
+@app.post("/api/mx/data", summary="妙想金融数据查询")
+def mx_data(payload: MXQueryRequest):
+    result = DataService().run(payload.query, timeout=120)
+    return _mx_response(result)
+
+
+@app.post("/api/mx/search", summary="妙想资讯搜索")
+def mx_search(payload: MXQueryRequest):
+    result = SearchService().run(payload.query, timeout=120)
+    return _mx_response(result)
+
+
+@app.post("/api/mx/xuangu", summary="妙想智能选股")
+def mx_xuangu(payload: MXQueryRequest):
+    result = XuanguService().run(payload.query, timeout=180)
+    return _mx_response(result)
+
+
+@app.post("/api/mx/moni", summary="妙想模拟组合查询")
+def mx_moni(payload: MXQueryRequest):
+    result = MoniService().run(payload.query, timeout=120)
+    return _mx_response(result)
+
+
+def _resolve_strategy_label(strategy_name: str) -> str:
+    return {
+        "dual_ma": "双均线策略",
+        "bollinger_bands": "布林带策略",
+        "rsi_reversal": "RSI 反转策略",
+    }.get(strategy_name, strategy_name)
+
+
+@app.get("/api/summary", summary="获取回测汇总")
+async def get_summary(start_date: str, end_date: str):
+    config = load_config()
+    stock_pool = config.get("stock_pool", []) or []
+    strategy_conf = config.get("strategy", {}) or {}
+    strategy_name = strategy_conf.get("name", "bollinger_bands")
+    strategy_params = strategy_conf.get("parameters", {}) or {}
+    account_conf = config.get("account", {}) or {}
+
+    if not stock_pool:
+        return {
+            "status": "success",
+            "data": [],
+            "data_source": "empty_pool",
+            "fetch_note": "股票池为空",
+        }
+
+    rows = []
+    source_tags = []
+    notes = []
+    errors = []
+
+    for ticker in stock_pool:
+        try:
+            df = await fetch_stock_data_with_timeout(ticker, start_date, end_date)
+            if df is None or df.empty:
+                continue
+
+            source_tags.append(str(df.attrs.get("data_source", "")))
+            fetch_note = str(df.attrs.get("fetch_note", "")).strip()
+            if fetch_note:
+                notes.append(fetch_note)
+
+            signal_df = StrategyFactory.generate_signals(df, strategy_name, strategy_params)
+            engine = BacktestEngine(
+                initial_cash=float(account_conf.get("initial_cash", 100000.0)),
+                commission_rate=float(account_conf.get("commission_rate", 0.00025)),
+                tax_rate=float(account_conf.get("tax_rate", 0.0005)),
+            )
+            result = engine.run(signal_df, ticker)
+            metrics = result.get("metadata", {}) or {}
+            logs = result.get("logs", []) or []
+            stock_name = _resolve_stock_name(signal_df, ticker)
+
+            rows.append({
+                "ticker": ticker,
+                "display_name": stock_name or ticker,
+                "name": stock_name,
+                "strategy": _resolve_strategy_label(strategy_name),
+                "final_equity": metrics.get("final_equity", 0),
+                "return_rate": metrics.get("total_return", 0),
+                "trade_count": metrics.get("trade_count", 0),
+                "today_trades": _extract_today_trades(logs, end_date),
+            })
+        except Exception as exc:
+            errors.append(f"{ticker}: {exc}")
+
+    if errors and not rows:
+        raise HTTPException(status_code=500, detail={"message": "回测汇总生成失败", "errors": errors})
+
+    unique_sources = {s for s in source_tags if s}
+    if any("cache_plus" in s for s in unique_sources):
+        data_source = "cache_partial"
+    elif any(s in {"tushare", "remote"} for s in unique_sources):
+        data_source = "partial_fetch"
+    elif unique_sources == {"cache"}:
+        data_source = "cache_first"
+    else:
+        data_source = next(iter(unique_sources), "unknown")
+
+    fetch_note = "；".join(sorted(set(n for n in notes if n)))
+    if errors:
+        err_note = f"部分股票失败：{len(errors)} 只"
+        fetch_note = f"{fetch_note}；{err_note}" if fetch_note else err_note
+
+    return {
+        "status": "success",
+        "data": rows,
+        "data_source": data_source,
+        "fetch_note": fetch_note,
+        "errors": errors,
+    }
+
+
+@app.get("/api/detail/{ticker}", summary="获取个股回测详情")
+async def get_stock_detail(ticker: str, start_date: str, end_date: str):
+    config = load_config()
+    strategy_conf = config.get("strategy", {}) or {}
+    strategy_name = strategy_conf.get("name", "bollinger_bands")
+    strategy_params = strategy_conf.get("parameters", {}) or {}
+    account_conf = config.get("account", {}) or {}
+
+    try:
+        df = await fetch_stock_data_with_timeout(ticker, start_date, end_date)
+        if df is None or df.empty:
+            raise HTTPException(status_code=404, detail=f"{ticker} 在指定区间无可用数据")
+
+        signal_df = StrategyFactory.generate_signals(df, strategy_name, strategy_params)
+        engine = BacktestEngine(
+            initial_cash=float(account_conf.get("initial_cash", 100000.0)),
+            commission_rate=float(account_conf.get("commission_rate", 0.00025)),
+            tax_rate=float(account_conf.get("tax_rate", 0.0005)),
+        )
+        result = engine.run(signal_df, ticker)
+        metrics = result.get("metadata", {}) or {}
+        logs = result.get("logs", []) or []
+        stock_name = _resolve_stock_name(signal_df, ticker)
+        data_source = str(df.attrs.get("data_source", ""))
+        fetch_note = str(df.attrs.get("fetch_note", "")).strip()
+
+        klines = []
+        for _, row in signal_df.iterrows():
+            trade_signal = row.get("trade_signal", 0)
+            klines.append({
+                "date": row["date"].strftime("%Y-%m-%d") if pd.notna(row.get("date")) else "",
+                "open": float(row.get("open", 0) or 0),
+                "high": float(row.get("high", 0) or 0),
+                "low": float(row.get("low", 0) or 0),
+                "close": float(row.get("close", 0) or 0),
+                "volume": float(row.get("volume", 0) or 0),
+                "total_equity": float(row.get("total_equity", 0) or 0),
+                "trade_signal": int(trade_signal) if pd.notna(trade_signal) else 0,
+            })
+
+        metadata = {
+            **metrics,
+            "ticker": ticker,
+            "name": stock_name,
+            "display_name": stock_name or ticker,
+            "strategy_name": strategy_name,
+            "strategy_label": _resolve_strategy_label(strategy_name),
+            "data_source": data_source,
+            "fetch_note": fetch_note,
+            "start_date": start_date,
+            "end_date": end_date,
+        }
+
+        return {
+            "status": "success",
+            "ticker": ticker,
+            "name": stock_name,
+            "display_name": stock_name or ticker,
+            "metadata": metadata,
+            "klines": klines,
+            "logs": logs,
+        }
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"获取 {ticker} 详情失败: {exc}")
+
 
 async def fetch_stock_data_with_timeout(symbol: str, start_date: str, end_date: str, timeout: int = 20):
     """给单只股票的数据抓取加超时，避免一只票拖死整个接口"""
@@ -120,255 +329,3 @@ def _resolve_stock_name(df: pd.DataFrame, ticker: str) -> str:
     except Exception:
         pass
     return ""
-
-
-def _build_detail_result(config: dict, ticker: str, df_signals: pd.DataFrame, start_date: str, end_date: str, stock_name: str, data_source: str, fetch_note: str = ""):
-    mask = (df_signals['date'] >= pd.to_datetime(start_date)) & (df_signals['date'] <= pd.to_datetime(end_date))
-    df_slice = df_signals.loc[mask].copy().reset_index(drop=True)
-    if df_slice.empty:
-        raise ValueError("该时间区间内没有交易数据")
-
-    engine = BacktestEngine(
-        initial_cash=config['account']['initial_cash'],
-        commission_rate=config['account']['commission_rate'],
-        tax_rate=config['account']['tax_rate']
-    )
-    res = engine.run(df_slice, ticker)
-    res['data']['date'] = res['data']['date'].dt.strftime('%Y-%m-%d')
-    logs = res.get('logs', [])
-    return {
-        "status": "success",
-        "name": stock_name,
-        "metadata": res['metadata'],
-        "klines": clean_nan(res['data']),
-        "logs": logs,
-        "today_trades": _extract_today_trades(logs, end_date),
-        "data_source": data_source,
-        **({"fetch_note": fetch_note} if fetch_note else {}),
-    }
-
-
-def _run_collect_in_background(coro_factory):
-    try:
-        asyncio.run(coro_factory())
-    except Exception as e:
-        print(f"⚠️ 后台补齐任务失败: {e}")
-
-
-@app.get("/api/summary", summary="获取大盘总览数据")
-async def get_summary(background_tasks: BackgroundTasks, start_date: str = "20240101", end_date: str = "20240201"):
-    config = load_config()
-    pool = config['stock_pool']
-
-    cached_tickers = [ticker for ticker in pool if dc.has_cached_data(ticker)]
-    cold_tickers = [ticker for ticker in pool if ticker not in cached_tickers]
-
-    def _build_result(ticker: str, raw_data: pd.DataFrame, stock_name: str, data_source: str, fetch_note: str):
-        if raw_data is None or raw_data.empty:
-            return None
-        df_signals = StrategyFactory.generate_signals(
-            raw_data,
-            config['strategy']['name'],
-            config['strategy']['parameters']
-        )
-        mask = (df_signals['date'] >= pd.to_datetime(start_date)) & (df_signals['date'] <= pd.to_datetime(end_date))
-        df_slice = df_signals.loc[mask].copy().reset_index(drop=True)
-        if df_slice.empty:
-            return None
-        engine = BacktestEngine(
-            initial_cash=config['account']['initial_cash'],
-            commission_rate=config['account']['commission_rate'],
-            tax_rate=config['account']['tax_rate']
-        )
-        res = engine.run(df_slice, ticker)
-        meta = res['metadata']
-        logs = res.get('logs', [])
-        today_str = f"{end_date[:4]}-{end_date[4:6]}-{end_date[6:8]}"
-        today_trades = [
-            {"action": l['action'], "price": l['price'], "shares": l['shares']}
-            for l in logs
-            if str(l.get('execution_date', '')).startswith(today_str)
-        ]
-        return {
-            "ticker": ticker,
-            "name": stock_name,
-            "display_name": stock_name or ticker,
-            "strategy": config['strategy']['name'],
-            "final_equity": meta['final_equity'],
-            "return_rate": meta['total_return'],
-            "trade_count": meta['trade_count'],
-            "data_source": data_source,
-            "fetch_note": fetch_note,
-            "today_trades": today_trades,
-        }
-
-    async def _process_cached(ticker: str):
-        try:
-            cache_record = dc._get_cache_record(ticker)
-            if not cache_record or not os.path.exists(cache_record["file_path"]):
-                return None
-
-            def _load_and_build():
-                raw_data = dc._load_cache_df(cache_record["file_path"])
-                if raw_data.empty:
-                    return None
-                stock_name = _resolve_stock_name(raw_data, ticker)
-                return _build_result(ticker, raw_data, stock_name, "cache", "缓存优先：summary 未触发远端补齐")
-
-            return await asyncio.to_thread(_load_and_build)
-        except Exception as e:
-            print(f"⚠️ 处理 {ticker} 失败: {repr(e)}")
-            import traceback
-            traceback.print_exc()
-            return None
-
-    async def _process_remote(ticker: str):
-        try:
-            raw_data = await fetch_stock_data_with_timeout(ticker, start_date="20230101", end_date=end_date, timeout=10)
-
-            def _build_remote():
-                stock_name = _resolve_stock_name(raw_data, ticker)
-                data_source = raw_data.attrs.get("data_source", "remote") if hasattr(raw_data, "attrs") else "remote"
-                fetch_note = raw_data.attrs.get("fetch_note", "") if hasattr(raw_data, "attrs") else ""
-                return _build_result(ticker, raw_data, stock_name, data_source, fetch_note)
-
-            return await asyncio.to_thread(_build_remote)
-        except Exception as e:
-            print(f"⚠️ 处理 {ticker} 失败: {repr(e)}")
-            import traceback
-            traceback.print_exc()
-            return None
-
-    async def _collect(tickers, budget_sec: float, handler):
-        tasks = [asyncio.create_task(handler(t)) for t in tickers]
-        if not tasks:
-            return [], False
-        done, pending = await asyncio.wait(tasks, timeout=budget_sec)
-        rows = []
-        for task in done:
-            try:
-                row = task.result()
-                if row is not None:
-                    rows.append(row)
-            except Exception:
-                continue
-        return rows, bool(pending)
-
-    cached_rows, cached_pending = await _collect(cached_tickers, 20, _process_cached)
-    if cached_rows:
-        if cold_tickers:
-            background_tasks.add_task(_run_collect_in_background, lambda: _collect(cold_tickers, 6, _process_remote))
-        return {
-            "status": "success",
-            "data": cached_rows,
-            "data_source": "cache_first" if not cached_pending else "cache_partial",
-            "fetch_note": "短区间优先：缓存结果已返回，冷票继续后台补齐" if cached_pending else "短区间优先：缓存结果已返回",
-        }
-
-    remote_rows, remote_pending = await _collect(pool, 12, _process_remote)
-    return {
-        "status": "success",
-        "data": remote_rows,
-        "data_source": "full_fetch" if not remote_pending else "partial_fetch",
-        "fetch_note": "短区间优先：数据补齐中" if remote_pending else "全量结果已返回",
-    }
-
-
-@app.post("/api/mx/search", summary="妙想资讯搜索查询")
-def mx_search_query(payload: dict):
-    query = str(payload.get("query", "")).strip()
-    if not query:
-        raise HTTPException(status_code=400, detail="query 不能为空")
-    try:
-        result = run_mx_search_query(query)
-        return {"status": "success", **result}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.post("/api/mx/data", summary="妙想金融数据查询")
-def mx_data_query(payload: dict):
-    query = str(payload.get("query", "")).strip()
-    if not query:
-        raise HTTPException(status_code=400, detail="query 不能为空")
-    try:
-        result = run_mx_data_query(query)
-        return {"status": "success", **result}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.post("/api/mx/xuangu", summary="妙想智能选股查询")
-def mx_xuangu_query(payload: dict):
-    query = str(payload.get("query", "")).strip()
-    if not query:
-        raise HTTPException(status_code=400, detail="query 不能为空")
-    try:
-        result = run_mx_xuangu_query(query)
-        return {"status": "success", **result}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.post("/api/mx/moni", summary="妙想模拟组合查询")
-def mx_moni_query(payload: dict):
-    query = str(payload.get("query", "")).strip()
-    if not query:
-        raise HTTPException(status_code=400, detail="query 不能为空")
-    try:
-        result = run_mx_moni_query(query)
-        return {"status": "success", **result}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.get("/api/detail/{ticker}", summary="获取单票详细数据")
-async def get_detail(ticker: str, start_date: str = "20240101", end_date: str = "20240131"):
-    config = load_config()
-
-    try:
-        cache_record = dc._get_cache_record(ticker)
-        if cache_record and os.path.exists(cache_record["file_path"]):
-            cached_data = dc._load_cache_df(cache_record["file_path"])
-            if not cached_data.empty:
-                stock_name = _resolve_stock_name(cached_data, ticker)
-                effective_end = min(end_date, cache_record.get("end_date", end_date))
-                df_signals = StrategyFactory.generate_signals(
-                    cached_data,
-                    config['strategy']['name'],
-                    config['strategy']['parameters']
-                )
-                return _build_detail_result(
-                    config=config,
-                    ticker=ticker,
-                    df_signals=df_signals,
-                    start_date=start_date,
-                    end_date=effective_end,
-                    stock_name=stock_name,
-                    data_source="cache",
-                    fetch_note="",
-                )
-
-        raw_data = await fetch_stock_data_with_timeout(ticker, start_date="20230101", end_date=end_date, timeout=10)
-
-        stock_name = _resolve_stock_name(raw_data, ticker)
-        df_signals = StrategyFactory.generate_signals(
-            raw_data,
-            config['strategy']['name'],
-            config['strategy']['parameters']
-        )
-
-        return _build_detail_result(
-            config=config,
-            ticker=ticker,
-            df_signals=df_signals,
-            start_date=start_date,
-            end_date=end_date,
-            stock_name=stock_name,
-            data_source=raw_data.attrs.get("data_source", "remote") if hasattr(raw_data, "attrs") else "remote",
-            fetch_note=raw_data.attrs.get("fetch_note", "") if hasattr(raw_data, "attrs") else "",
-        )
-    except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e))
-    except Exception as e:
-        raise HTTPException(status_code=503, detail=f"数据获取失败: {e}")
