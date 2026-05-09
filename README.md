@@ -69,6 +69,16 @@ cd QuantSandbox
 
 ### 2. 启动后端
 
+先创建虚拟环境并安装依赖：
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+```
+
+> 注意：项目使用本地 Parquet 缓存，`requirements.txt` 中已包含 `pyarrow`；如果缺少该依赖，`/api/summary` 等命中缓存读取路径的接口会因 `pandas.read_parquet()` 无可用引擎而报错。
+
 推荐使用项目自带脚本：
 
 ```bash

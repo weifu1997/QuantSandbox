@@ -3,6 +3,7 @@ uvicorn
 sqlalchemy
 pydantic
 pandas
+pyarrow
 numpy
 requests
 PyYAML

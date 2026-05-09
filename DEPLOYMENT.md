@@ -11,6 +11,7 @@ This document provides instructions for deploying QuantSandbox in production env
 
 ### Dependencies
 - pandas
+- pyarrow  # required for reading/writing parquet cache files
 - numpy
 - akshare
 - fastapi
