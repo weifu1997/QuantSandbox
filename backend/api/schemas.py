@@ -17,6 +17,13 @@ class WatchlistUpdateRequest(BaseModel):
     risk_level: Optional[str] = None
     catalyst_factors: Any = None
     watch_price_zone: Optional[str] = None
+    board: Optional[str] = None
+    pe_ttm: Optional[str] = None
+    pb: Optional[str] = None
+    latest_price: Optional[str] = None
+    dividend_yield: Optional[str] = None
+    month_return: Optional[str] = None
+    st_flag: Optional[str] = None
 
 
 class APIResponse(BaseModel):

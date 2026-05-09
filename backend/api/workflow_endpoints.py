@@ -35,6 +35,7 @@ def _serialize_run(run) -> dict[str, Any]:
     return {
         "id": run.id,
         "user_id": run.user_id,
+        "workflow_type": getattr(run, "workflow_type", None),
         "status": run.status.value if hasattr(run.status, "value") else str(run.status),
         "started_at": run.started_at.isoformat() if run.started_at else None,
         "completed_at": run.completed_at.isoformat() if run.completed_at else None,
@@ -80,6 +81,13 @@ def _serialize_watchlist(entry) -> dict[str, Any]:
         "entry_reason": entry.entry_reason,
         "risk_level": entry.risk_level.value if hasattr(entry.risk_level, "value") else str(entry.risk_level),
         "catalyst_factors": entry.catalyst_factors,
+        "board": getattr(entry, 'board', None),
+        "pe_ttm": getattr(entry, 'pe_ttm', None),
+        "pb": getattr(entry, 'pb', None),
+        "latest_price": getattr(entry, 'latest_price', None),
+        "dividend_yield": getattr(entry, 'dividend_yield', None),
+        "month_return": getattr(entry, 'month_return', None),
+        "st_flag": getattr(entry, 'st_flag', None),
         "watch_price_zone": entry.watch_price_zone,
         "entry_date": entry.entry_date.isoformat() if entry.entry_date else None,
         "created_at": entry.created_at.isoformat() if entry.created_at else None,
@@ -161,6 +169,29 @@ def get_watchlist():
         return {"status": "success", "data": [_serialize_watchlist(w) for w in rows]}
 
 
+def _candidate_data_from_watchlist_entry(entry) -> dict[str, Any]:
+    return {
+        'symbol': entry.symbol,
+        'name': entry.name,
+        'board': getattr(entry, 'board', '') or '',
+        'pe_ttm': getattr(entry, 'pe_ttm', '') or '',
+        'pb': getattr(entry, 'pb', '') or '',
+        'latest_price': getattr(entry, 'latest_price', '') or '',
+        'dividend_yield': getattr(entry, 'dividend_yield', '') or '',
+        'month_return': getattr(entry, 'month_return', '') or '',
+        'st_flag': getattr(entry, 'st_flag', '否') or '否',
+    }
+
+
+def _has_complete_risk_inputs(data: dict[str, Any]) -> bool:
+    required = ('pb', 'pe_ttm', 'month_return', 'dividend_yield')
+    for key in required:
+        value = data.get(key)
+        if value is None or str(value).strip() == '':
+            return False
+    return True
+
+
 @router.patch("/watchlist/{entry_id}")
 def update_watchlist_entry(entry_id: str, payload: WatchlistUpdateRequest):
     with session_scope() as s:
@@ -177,18 +208,53 @@ def update_watchlist_entry(entry_id: str, payload: WatchlistUpdateRequest):
                 raise HTTPException(status_code=400, detail="invalid risk_level") from exc
 
         catalyst_factors = payload.catalyst_factors
-        if isinstance(catalyst_factors, str):
-            catalyst_factors = [item.strip() for item in catalyst_factors.split("、") if item.strip()]
+        derived_data = _candidate_data_from_watchlist_entry(entry)
+        if payload.board is not None:
+            derived_data['board'] = payload.board
+        if payload.pe_ttm is not None:
+            derived_data['pe_ttm'] = payload.pe_ttm
+        if payload.pb is not None:
+            derived_data['pb'] = payload.pb
+        if payload.latest_price is not None:
+            derived_data['latest_price'] = payload.latest_price
+        if payload.dividend_yield is not None:
+            derived_data['dividend_yield'] = payload.dividend_yield
+        if payload.month_return is not None:
+            derived_data['month_return'] = payload.month_return
+        if payload.st_flag is not None:
+            derived_data['st_flag'] = payload.st_flag
+
+        should_recompute = _has_complete_risk_inputs(derived_data)
+
+        if catalyst_factors is None:
+            catalyst_factors = entry.catalyst_factors
+
+        if risk_level is None:
+            risk_level = _runner()._derive_risk_level(derived_data) if should_recompute else entry.risk_level
+
+        entry_reason = payload.entry_reason
+        if entry_reason is None:
+            entry_reason = _runner()._derive_entry_reason(derived_data, catalyst_factors) if should_recompute else entry.entry_reason
+
+        watch_price_zone = payload.watch_price_zone
+        if watch_price_zone is None:
+            watch_price_zone = _runner()._derive_watch_price_zone(entry.name, entry.symbol, derived_data) if should_recompute else entry.watch_price_zone
 
         updated = watch_repo.update(
             entry,
-            entry_reason=payload.entry_reason,
+            entry_reason=entry_reason,
             risk_level=risk_level,
             catalyst_factors=catalyst_factors,
-            watch_price_zone=payload.watch_price_zone,
+            watch_price_zone=watch_price_zone,
+            board=payload.board,
+            pe_ttm=payload.pe_ttm,
+            pb=payload.pb,
+            latest_price=payload.latest_price,
+            dividend_yield=payload.dividend_yield,
+            month_return=payload.month_return,
+            st_flag=payload.st_flag,
         )
         return {"status": "success", "data": _serialize_watchlist(updated)}
-
 
 @router.delete("/watchlist/{entry_id}")
 def delete_watchlist_entry(entry_id: str):

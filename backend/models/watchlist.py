@@ -31,6 +31,13 @@ class WatchlistEntry(Base):
         SAEnum(RiskLevel, name="watchlist_risk_level"), nullable=False, default=RiskLevel.UNKNOWN
     )
     catalyst_factors: Mapped[dict | list | str | None] = mapped_column(JSON, nullable=True)
+    board: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    pe_ttm: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    pb: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    latest_price: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    dividend_yield: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    month_return: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    st_flag: Mapped[str | None] = mapped_column(String(16), nullable=True)
     watch_price_zone: Mapped[str | None] = mapped_column(String(128), nullable=True)
     entry_date: Mapped[datetime] = mapped_column(DateTime(timezone=False), nullable=False, default=datetime.utcnow)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=False), nullable=False, default=datetime.utcnow)

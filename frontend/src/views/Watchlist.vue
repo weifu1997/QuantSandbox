@@ -106,7 +106,7 @@
       </div>
     </el-card>
 
-    <el-dialog v-model="detailVisible" title="观察池详情" width="560px">
+    <el-dialog v-model="detailVisible" title="观察池详情" width="720px">
       <div v-if="selectedRow" class="detail-content">
         <el-descriptions :column="2" border size="small">
           <el-descriptions-item label="代码">{{ selectedRow.symbol }}</el-descriptions-item>
@@ -115,7 +115,14 @@
             <el-tag :type="riskTag(selectedRow.risk_level)" size="small">{{ riskLabel(selectedRow.risk_level) }}</el-tag>
           </el-descriptions-item>
           <el-descriptions-item label="价格区间">{{ selectedRow.watch_price_zone || '-' }}</el-descriptions-item>
-          <el-descriptions-item label="入池日期" :span="2">{{ formatDate(selectedRow.entry_date) }}</el-descriptions-item>
+          <el-descriptions-item label="上市板块">{{ selectedRow.board || '-' }}</el-descriptions-item>
+          <el-descriptions-item label="股息率(%)">{{ selectedRow.dividend_yield || '-' }}</el-descriptions-item>
+          <el-descriptions-item label="PE TTM">{{ selectedRow.pe_ttm || '-' }}</el-descriptions-item>
+          <el-descriptions-item label="PB">{{ selectedRow.pb || '-' }}</el-descriptions-item>
+          <el-descriptions-item label="最新价">{{ selectedRow.latest_price || '-' }}</el-descriptions-item>
+          <el-descriptions-item label="近20交易日涨跌幅(%)">{{ selectedRow.month_return || '-' }}</el-descriptions-item>
+          <el-descriptions-item label="ST标记">{{ selectedRow.st_flag || '-' }}</el-descriptions-item>
+          <el-descriptions-item label="入池日期">{{ formatDate(selectedRow.entry_date) }}</el-descriptions-item>
           <el-descriptions-item label="入池理由" :span="2">{{ selectedRow.entry_reason || '-' }}</el-descriptions-item>
           <el-descriptions-item label="催化因素" :span="2">
             <div v-if="normalizeCatalysts(selectedRow.catalyst_factors).length" class="tag-list">
@@ -137,24 +144,20 @@
       </div>
     </el-dialog>
 
-    <el-dialog v-model="editVisible" title="编辑观察池条目" width="620px">
-      <el-form label-width="100px">
-        <el-form-item label="入池理由">
-          <el-input v-model="editForm.entry_reason" type="textarea" :rows="3" />
+    <el-dialog v-model="editVisible" title="补充缺失字段" width="620px">
+      <el-alert
+        type="info"
+        :closable="false"
+        show-icon
+        title="这里只允许补充自动源不稳定的字段：上市板块、股息率。其余字段由系统自动拉取、计算和生成。"
+        class="edit-alert"
+      />
+      <el-form label-width="150px">
+        <el-form-item label="上市板块">
+          <el-input v-model="editForm.board" placeholder="如：主板 / 创业板 / 科创板" />
         </el-form-item>
-        <el-form-item label="风险等级">
-          <el-select v-model="editForm.risk_level" style="width: 180px">
-            <el-option label="低风险" value="low" />
-            <el-option label="中风险" value="medium" />
-            <el-option label="高风险" value="high" />
-            <el-option label="待评估" value="unknown" />
-          </el-select>
-        </el-form-item>
-        <el-form-item label="催化因素">
-          <el-input v-model="editCatalysts" placeholder="多个因素请用 顿号/逗号 分隔" />
-        </el-form-item>
-        <el-form-item label="观察价位">
-          <el-input v-model="editForm.watch_price_zone" placeholder="例如：10.00~12.00 元" />
+        <el-form-item label="股息率(%)">
+          <el-input v-model="editForm.dividend_yield" placeholder="如：0.6754" />
         </el-form-item>
       </el-form>
       <template #footer>
@@ -180,8 +183,11 @@ const detailVisible = ref(false);
 const editVisible = ref(false);
 const selectedRow = ref(null);
 const selectedRows = ref([]);
-const editForm = ref({ id: '', entry_reason: '', risk_level: 'unknown', watch_price_zone: '' });
-const editCatalysts = ref('');
+const editForm = ref({
+  id: '',
+  board: '',
+  dividend_yield: '',
+});
 
 const total = computed(() => allData.value.length);
 
@@ -236,11 +242,9 @@ function handleSelectionChange(rows) {
 function openEdit(row) {
   editForm.value = {
     id: row.id,
-    entry_reason: row.entry_reason || '',
-    risk_level: row.risk_level || 'unknown',
-    watch_price_zone: row.watch_price_zone || '',
+    board: row.board || '',
+    dividend_yield: row.dividend_yield || '',
   };
-  editCatalysts.value = normalizeCatalysts(row.catalyst_factors).join('、');
   editVisible.value = true;
 }
 
@@ -248,10 +252,8 @@ async function submitEdit() {
   saving.value = true;
   try {
     const payload = {
-      entry_reason: editForm.value.entry_reason,
-      risk_level: editForm.value.risk_level,
-      watch_price_zone: editForm.value.watch_price_zone,
-      catalyst_factors: normalizeCatalysts(editCatalysts.value),
+      board: editForm.value.board,
+      dividend_yield: editForm.value.dividend_yield,
     };
     await updateWatchlistEntry(editForm.value.id, payload);
     ElMessage.success('保存成功');
@@ -334,6 +336,7 @@ onMounted(refresh);
 :deep(.el-dialog__header) { background: #131722; color: #eef2f7; border-bottom: 1px solid #2b3139; }
 :deep(.el-dialog__body) { background: #131722; color: #d1d4dc; }
 .detail-content code { color: #0ECB81; font-size: 12px; }
+.edit-alert { margin-bottom: 16px; }
 :deep(.el-descriptions) { background: #1a1e29; }
 :deep(.el-descriptions__label) { background: #131722; color: #8a919e; }
 :deep(.el-descriptions__content) { background: #1a1e29; color: #eef2f7; }

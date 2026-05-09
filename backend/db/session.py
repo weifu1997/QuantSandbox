@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import QueuePool
 
 from backend.db.base import Base
+from backend.workflows.types import WorkflowType
 
 BASE_DIR = Path(__file__).resolve().parents[2]
 DEFAULT_DB_DIR = BASE_DIR / "data"
@@ -43,12 +44,51 @@ if DB_URL.startswith("sqlite"):
         cursor.execute("PRAGMA foreign_keys=ON")
         cursor.close()
 
+def _ensure_workflow_type_column() -> None:
+    if not DB_URL.startswith("sqlite:///"):
+        return
+    with engine.begin() as conn:
+        columns = [row[1] for row in conn.exec_driver_sql("PRAGMA table_info(workflow_runs)").fetchall()]
+        if not columns or "workflow_type" in columns:
+            return
+        conn.exec_driver_sql(
+            "ALTER TABLE workflow_runs ADD COLUMN workflow_type VARCHAR(32) NOT NULL DEFAULT 'low_value_discovery'"
+        )
+        conn.exec_driver_sql(
+            "UPDATE workflow_runs SET workflow_type = ? WHERE workflow_type IS NULL OR workflow_type = ''",
+            (WorkflowType.LOW_VALUE.value,),
+        )
+
+
+def _ensure_watchlist_manual_fields() -> None:
+    if not DB_URL.startswith("sqlite:///"):
+        return
+    with engine.begin() as conn:
+        columns = [row[1] for row in conn.exec_driver_sql("PRAGMA table_info(watchlist_entries)").fetchall()]
+        if not columns:
+            return
+        required_columns = {
+            'board': 'VARCHAR(32)',
+            'pe_ttm': 'VARCHAR(32)',
+            'pb': 'VARCHAR(32)',
+            'latest_price': 'VARCHAR(32)',
+            'dividend_yield': 'VARCHAR(32)',
+            'month_return': 'VARCHAR(32)',
+            'st_flag': 'VARCHAR(16)',
+        }
+        for column_name, column_type in required_columns.items():
+            if column_name not in columns:
+                conn.exec_driver_sql(f"ALTER TABLE watchlist_entries ADD COLUMN {column_name} {column_type}")
+
+
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, future=True, class_=Session)
 
 
 def init_db() -> None:
     """Create all registered tables."""
     Base.metadata.create_all(bind=engine)
+    _ensure_workflow_type_column()
+    _ensure_watchlist_manual_fields()
 
 
 @contextmanager

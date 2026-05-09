@@ -29,6 +29,7 @@ from backend.workflows.common.batching import chunked
 from backend.workflows.low_value_flow.rules import should_reject_in_quick_risk, structure_decision_from_data
 from backend.workflows.low_value_flow.schemas import LowValueRunInput, build_default_query
 from backend.workflows.low_value_flow.serializer import review_result_from_status
+from backend.workflows.types import WorkflowType
 
 logger = logging.getLogger(__name__)
 
@@ -111,6 +112,25 @@ class LowValueWorkflowRunner:
             return RiskLevel.HIGH
         return RiskLevel.MEDIUM
 
+    @staticmethod
+    def _derive_board(symbol: str, explicit_board: str | None = None) -> str:
+        board = str(explicit_board or '').strip()
+        if board and board not in {'SH', 'SZ'}:
+            return board
+        code = str(symbol or '').strip().lower()
+        if code.startswith(('sh', 'sz')):
+            code = code[2:]
+        if len(code) >= 2:
+            if code.startswith('68'):
+                return '科创板'
+            if code.startswith('30'):
+                return '创业板'
+            if code.startswith(('60', '00', '001', '002')):
+                return '主板'
+            if code.startswith(('4', '8', '92')):
+                return '北交所'
+        return board
+
     def _extract_latest_snapshot(self, sec_name: str, symbol: str) -> dict[str, float | str] | None:
         query = f"{sec_name or symbol} 最新价 市净率"
         try:
@@ -151,24 +171,41 @@ class LowValueWorkflowRunner:
         month_ret = self._safe_float(data.get('month_return'))
         div = self._safe_float(data.get('dividend_yield'))
         snapshot = self._extract_latest_snapshot(sec_name, symbol)
-        if snapshot and snapshot.get('price') and snapshot.get('pb'):
-            price = float(snapshot['price'])
-            current_pb = self._safe_float(snapshot['pb'])
-            if current_pb and current_pb > 0:
-                low_pb, high_pb = (1.0, 1.3) if current_pb >= 1.0 else (0.8, 1.0)
-                low_price = price * low_pb / current_pb
-                high_price = price * high_pb / current_pb
-                if low_price > high_price:
-                    low_price, high_price = high_price, low_price
-                extra = []
-                if month_ret is not None and month_ret <= -10:
-                    extra.append('回撤较深')
-                if div is not None and div >= 3:
-                    extra.append('高股息')
-                suffix = f"（PB {low_pb:.1f}~{high_pb:.1f}）"
-                if extra:
-                    suffix += '，' + ' / '.join(extra)
-                return f"{low_price:.2f}~{high_price:.2f} 元{suffix}"
+
+        price = None
+        current_pb = None
+        if snapshot:
+            price = self._safe_float(snapshot.get('price'))
+            current_pb = self._safe_float(snapshot.get('pb'))
+
+        if price is None:
+            for key in ('latest_price', 'price', 'current_price', 'close_price', 'close'):
+                price = self._safe_float(data.get(key))
+                if price is not None:
+                    break
+        if current_pb is None:
+            for key in ('pb', 'pb_ratio', 'current_pb'):
+                current_pb = self._safe_float(data.get(key))
+                if current_pb is not None:
+                    break
+
+        if price is not None and current_pb is not None and current_pb > 0:
+            low_pb = current_pb * 0.95
+            high_pb = current_pb * 1.05
+            low_price = price * low_pb / current_pb
+            high_price = price * high_pb / current_pb
+            if low_price > high_price:
+                low_price, high_price = high_price, low_price
+            extra = []
+            if month_ret is not None and month_ret <= -10:
+                extra.append('回撤较深')
+            if div is not None and div >= 3:
+                extra.append('高股息')
+            suffix = f"（PB {low_pb:.2f}~{high_pb:.2f}）"
+            if extra:
+                suffix += '，' + ' / '.join(extra)
+            return f"{low_price:.2f}~{high_price:.2f} 元{suffix}"
+
         # fallback when latest price unavailable — build zone-style description from hints
         zone_parts: list[str] = []
         if month_ret is not None:
@@ -252,6 +289,7 @@ class LowValueWorkflowRunner:
             run = repo.create(
                 WorkflowRun(
                     user_id=payload.user_id,
+                    workflow_type=WorkflowType.LOW_VALUE.value,
                     status=WorkflowRunStatus.RUNNING,
                     started_at=datetime.utcnow(),
                     total_steps=5,
@@ -443,7 +481,8 @@ class LowValueWorkflowRunner:
                 if result.ok and candidate:
                     reviews = self._load_candidate_reviews(candidate)
                     search_review = reviews.get('search')
-                    base_data = candidate.data if isinstance(candidate.data, dict) else item
+                    base_data = dict(candidate.data) if isinstance(candidate.data, dict) else dict(item)
+                    base_data['board'] = self._derive_board(symbol, base_data.get('board'))
                     catalyst_factors = self._derive_catalyst_factors(getattr(search_review, 'review_data', None))
                     watch_repo.create(
                         WatchlistEntry(
@@ -453,6 +492,13 @@ class LowValueWorkflowRunner:
                             entry_reason=self._derive_entry_reason(base_data, catalyst_factors),
                             risk_level=self._derive_risk_level(base_data),
                             catalyst_factors=catalyst_factors,
+                            board=base_data.get('board') or None,
+                            pe_ttm=str(base_data.get('pe_ttm', '') or ''),
+                            pb=str(base_data.get('pb', '') or ''),
+                            latest_price=str(base_data.get('latest_price', '') or ''),
+                            dividend_yield=str(base_data.get('dividend_yield', '') or ''),
+                            month_return=str(base_data.get('month_return', '') or ''),
+                            st_flag=str(base_data.get('st_flag', '') or ''),
                             watch_price_zone=self._derive_watch_price_zone(name, symbol, base_data),
                         )
                     )
