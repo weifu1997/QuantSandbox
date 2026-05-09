@@ -67,7 +67,7 @@
         </el-table-column>
       </el-table>
       
-      <div class="tip">💡 提示：默认区间截至今天，点击行可进入该股票的详细 K 线回测页面</div>
+      <div class="tip">💡 提示：默认区间截至最近交易日，点击行可进入该股票的详细 K 线回测页面</div>
     </el-card>
   </div>
 </template>
@@ -80,7 +80,8 @@ import { ElMessage } from 'element-plus';
 import dayjs from 'dayjs';
 
 const router = useRouter();
-const dateRange = ref(['20240101', dayjs().format('YYYYMMDD')]); // 默认区间：截至当前日期
+const dateRange = ref(['20240101', dayjs().format('YYYYMMDD')]);
+const latestTradeDate = ref(dayjs().format('YYYYMMDD'));
 const loading = ref(false);
 const tableData = ref([]);
 const statusState = ref('gray');
@@ -89,23 +90,23 @@ const summaryState = ref('');
 const dateShortcuts = [
   {
     text: '近 1 个月',
-    value: () => [dayjs().subtract(1, 'month').toDate(), dayjs().toDate()],
+    value: () => [dayjs(latestTradeDate.value).subtract(1, 'month').toDate(), dayjs(latestTradeDate.value).toDate()],
   },
   {
     text: '近 3 个月',
-    value: () => [dayjs().subtract(3, 'month').toDate(), dayjs().toDate()],
+    value: () => [dayjs(latestTradeDate.value).subtract(3, 'month').toDate(), dayjs(latestTradeDate.value).toDate()],
   },
   {
     text: '近 6 个月',
-    value: () => [dayjs().subtract(6, 'month').toDate(), dayjs().toDate()],
+    value: () => [dayjs(latestTradeDate.value).subtract(6, 'month').toDate(), dayjs(latestTradeDate.value).toDate()],
   },
   {
     text: '近 1 年',
-    value: () => [dayjs().subtract(1, 'year').toDate(), dayjs().toDate()],
+    value: () => [dayjs(latestTradeDate.value).subtract(1, 'year').toDate(), dayjs(latestTradeDate.value).toDate()],
   },
   {
     text: '今年以来',
-    value: () => [dayjs().startOf('year').toDate(), dayjs().toDate()],
+    value: () => [dayjs(latestTradeDate.value).startOf('year').toDate(), dayjs(latestTradeDate.value).toDate()],
   },
 ];
 
@@ -193,11 +194,16 @@ const goToDetail = (row) => {
 
 onMounted(async () => {
   try {
-    await getMeta();
+    const metaRes = await getMeta();
+    const payload = metaRes?.data || {};
+    const endDate = payload.latest_trade_date || dayjs().format('YYYYMMDD');
+    latestTradeDate.value = endDate;
+    dateRange.value = ['20240101', endDate];
   } catch (error) {
     console.error('getMeta failed, fallback to default range:', error);
+    latestTradeDate.value = dayjs().format('YYYYMMDD');
+    dateRange.value = ['20240101', latestTradeDate.value];
   } finally {
-    dateRange.value = ['20240101', dayjs().format('YYYYMMDD')];
     await refreshStatus();
     await fetchData();
   }

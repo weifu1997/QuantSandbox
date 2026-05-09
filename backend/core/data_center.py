@@ -16,8 +16,10 @@ except ImportError:
     ak = None
 import yaml
 import logging
-from datetime import datetime
+from datetime import date, datetime, timedelta
 from typing import Any
+
+from backend.core.trading_calendar import A_SHARE_HOLIDAYS
 
 logger = logging.getLogger(__name__)
 
@@ -580,11 +582,23 @@ class DataCenter:
         cache_end = parts[-1]
         return cache_start <= start_date and cache_end >= end_date
 
+    def _is_a_share_trading_day(self, target: date) -> bool:
+        if target.weekday() >= 5:
+            return False
+        return target.isoformat() not in A_SHARE_HOLIDAYS
+
+    def _resolve_latest_trading_day(self, target: date | None = None) -> date:
+        cursor = target or datetime.now().date()
+        while not self._is_a_share_trading_day(cursor):
+            cursor -= timedelta(days=1)
+        return cursor
+
     def get_latest_trade_date(self) -> str:
-        """直接返回今天日期，作为默认回测结束日"""
-        latest = datetime.now().strftime("%Y%m%d")
-        logger.info(f"🔎 [DataCenter] 最新交易日使用 today_date: {latest}")
-        return latest
+        """返回最近一个 A 股交易日，避免周末/节假日落到非交易日。"""
+        latest = self._resolve_latest_trading_day()
+        latest_str = latest.strftime("%Y%m%d")
+        logger.info(f"🔎 [DataCenter] 最新交易日使用 latest_trading_day: {latest_str}")
+        return latest_str
 
     def _normalize_tushare_daily(self, df: pd.DataFrame) -> pd.DataFrame:
         """将 Tushare 返回字段统一成本项目使用的字段格式"""
