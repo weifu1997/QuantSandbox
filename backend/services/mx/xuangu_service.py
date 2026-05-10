@@ -54,7 +54,7 @@ class XuanguService:
                 hardcoded_names=hardcoded_names or [],
             )
 
-        enrichment_cache: dict[str, dict[str, str]] = {}
+        enrichment_cache: dict[str, dict[str, Any]] = {}
 
         if csv_path and Path(csv_path).exists():
             with open(csv_path, "r", encoding="utf-8-sig", newline="") as f:
@@ -134,6 +134,15 @@ class XuanguService:
                         "dividend_yield": dividend_yield,
                         "month_return": month_return,
                         "st_flag": st_flag if st_flag else "否",
+                        "revenue_yoy": enrichment.get('revenue_yoy', ''),
+                        "revenue_growth": enrichment.get('revenue_growth', ''),
+                        "profit_yoy": enrichment.get('profit_yoy', ''),
+                        "net_profit_change": enrichment.get('net_profit_change', ''),
+                        "current_ratio": enrichment.get('current_ratio', ''),
+                        "quick_ratio": enrichment.get('quick_ratio', ''),
+                        "audit_opinion": enrichment.get('audit_opinion', ''),
+                        "regulatory_inquiry": enrichment.get('regulatory_inquiry', ''),
+                        "risk_flags": enrichment.get('risk_flags', []),
                     }
                 )
 
@@ -167,6 +176,15 @@ class XuanguService:
                         "dividend_yield": dividend_yield,
                         "month_return": month_return,
                         "st_flag": st_flag,
+                        "revenue_yoy": enrichment.get('revenue_yoy', ''),
+                        "revenue_growth": enrichment.get('revenue_growth', ''),
+                        "profit_yoy": enrichment.get('profit_yoy', ''),
+                        "net_profit_change": enrichment.get('net_profit_change', ''),
+                        "current_ratio": enrichment.get('current_ratio', ''),
+                        "quick_ratio": enrichment.get('quick_ratio', ''),
+                        "audit_opinion": enrichment.get('audit_opinion', ''),
+                        "regulatory_inquiry": enrichment.get('regulatory_inquiry', ''),
+                        "risk_flags": enrichment.get('risk_flags', []),
                     }
                 )
 
@@ -221,12 +239,35 @@ class XuanguService:
         except Exception:
             return None
 
-    def _fetch_candidate_enrichment(self, symbol: str, trade_date_hint: str = '') -> dict[str, str]:
+    def _fetch_candidate_enrichment(self, symbol: str, trade_date_hint: str = '') -> dict[str, Any]:
         symbol = str(symbol or '').strip()
         if not symbol:
-            return {'board': '', 'dividend_yield': ''}
-        board = ''
-        dividend_yield = ''
+            return {
+                'board': '',
+                'dividend_yield': '',
+                'revenue_yoy': '',
+                'revenue_growth': '',
+                'profit_yoy': '',
+                'net_profit_change': '',
+                'current_ratio': '',
+                'quick_ratio': '',
+                'audit_opinion': '',
+                'regulatory_inquiry': '',
+                'risk_flags': [],
+            }
+        enrichment: dict[str, Any] = {
+            'board': '',
+            'dividend_yield': '',
+            'revenue_yoy': '',
+            'revenue_growth': '',
+            'profit_yoy': '',
+            'net_profit_change': '',
+            'current_ratio': '',
+            'quick_ratio': '',
+            'audit_opinion': '',
+            'regulatory_inquiry': '',
+            'risk_flags': [],
+        }
         try:
             meta = self.data_center._tushare_post(
                 'stock_basic',
@@ -235,7 +276,7 @@ class XuanguService:
             )
             items = ((meta.get('data') or {}).get('items') or [])
             if items and len(items[0]) >= 3 and items[0][2] is not None:
-                board = str(items[0][2]).strip()
+                enrichment['board'] = str(items[0][2]).strip()
         except Exception:
             pass
         try:
@@ -247,12 +288,48 @@ class XuanguService:
             )
             items = ((basic.get('data') or {}).get('items') or [])
             if items and len(items[0]) >= 7 and items[0][6] is not None:
-                dividend_yield = str(items[0][6]).strip()
+                enrichment['dividend_yield'] = str(items[0][6]).strip()
             elif items and len(items[0]) >= 6 and items[0][5] is not None:
-                dividend_yield = str(items[0][5]).strip()
+                enrichment['dividend_yield'] = str(items[0][5]).strip()
         except Exception:
             pass
-        return {'board': board, 'dividend_yield': dividend_yield}
+        try:
+            fina = self.data_center._tushare_post(
+                'fina_indicator',
+                {'ts_code': self.data_center._to_ts_code(symbol), 'limit': 2},
+                fields='ts_code,end_date,q_sales_yoy,sales_yoy,q_dtprofit_yoy,dt_netprofit_yoy,current_ratio,quick_ratio,audit_result',
+            )
+            table = fina.get('data') or {}
+            fields = table.get('fields') or []
+            items = table.get('items') or []
+            if fields and items:
+                latest = {fields[i]: items[0][i] for i in range(min(len(fields), len(items[0])))}
+                previous = {fields[i]: items[1][i] for i in range(min(len(fields), len(items[1])))} if len(items) > 1 else latest
+                enrichment['revenue_yoy'] = self._clean_metric_value(latest.get('q_sales_yoy') or latest.get('sales_yoy'))
+                enrichment['revenue_growth'] = self._clean_metric_value(previous.get('q_sales_yoy') or previous.get('sales_yoy'))
+                enrichment['profit_yoy'] = self._clean_metric_value(latest.get('q_dtprofit_yoy') or latest.get('dt_netprofit_yoy'))
+                enrichment['net_profit_change'] = self._clean_metric_value(previous.get('q_dtprofit_yoy') or previous.get('dt_netprofit_yoy'))
+                enrichment['current_ratio'] = self._clean_metric_value(latest.get('current_ratio'))
+                enrichment['quick_ratio'] = self._clean_metric_value(latest.get('quick_ratio'))
+                enrichment['audit_opinion'] = self._clean_metric_value(latest.get('audit_result'))
+        except Exception:
+            pass
+        if enrichment['audit_opinion']:
+            flags: list[str] = []
+            audit = str(enrichment['audit_opinion'])
+            if any(token in audit for token in ['保留', '否定', '无法表示']):
+                flags.append('审计意见异常')
+            enrichment['risk_flags'] = flags
+        return enrichment
+
+    @staticmethod
+    def _clean_metric_value(value: Any) -> str:
+        if value is None:
+            return ''
+        text = str(value).strip()
+        if not text or text.lower() == 'nan':
+            return ''
+        return text
 
     @staticmethod
     def _match_dynamic_column(fieldnames: list[str], regex_patterns: list[str]) -> str:

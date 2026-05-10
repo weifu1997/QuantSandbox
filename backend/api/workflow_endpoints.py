@@ -5,7 +5,7 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query
 
-from backend.api.schemas import LeftSideRankRequest, LowValueRunRequest, VolumeVerifyRequest, WatchlistUpdateRequest
+from backend.api.schemas import BottomConfirmRunRequest, LeftSideRankRequest, LowValueRunRequest, VolumeVerifyRequest, WatchlistUpdateRequest
 from backend.db.session import session_scope
 from backend.models import RiskLevel
 from backend.repositories import (
@@ -15,6 +15,8 @@ from backend.repositories import (
     WorkflowStepRunRepository,
 )
 from backend.services.mx import DataService, SearchService, XuanguService, ZixuanService
+from backend.workflows.bottom_confirm.runner import BottomConfirmRunner
+from backend.workflows.bottom_confirm.schemas import BottomConfirmInput
 from backend.workflows.low_value_flow.logic_analyzer import LogicResult
 from backend.workflows.low_value_flow.runner import LowValueWorkflowRunner
 from backend.workflows.low_value_flow.schemas import LowValueRunInput
@@ -29,6 +31,13 @@ def _runner(batch_size: int = 5) -> LowValueWorkflowRunner:
         search_service=SearchService(),
         zixuan_service=ZixuanService(),
         batch_size=batch_size,
+    )
+
+
+def _bottom_confirm_runner() -> BottomConfirmRunner:
+    return BottomConfirmRunner(
+        data_service=DataService(),
+        search_service=SearchService(),
     )
 
 
@@ -127,7 +136,25 @@ def run_low_value(payload: LowValueRunRequest):
     return {"status": "success", "run_id": run_id}
 
 
+@router.post("/workflows/bottom-confirm/run")
+def run_bottom_confirm(payload: BottomConfirmRunRequest):
+    runner = _bottom_confirm_runner()
+    run_input = BottomConfirmInput(
+        symbols=payload.symbols,
+        left_side_preference=payload.left_side_preference,
+        right_side_preference=payload.right_side_preference,
+        user_id=payload.user_id,
+    )
+    run_id = runner.create_run(run_input)
+    threading.Thread(target=_run_bottom_confirm_async, args=(runner, run_input, run_id), daemon=True).start()
+    return {"status": "success", "run_id": run_id}
+
+
 def _run_workflow_async(runner: LowValueWorkflowRunner, run_input: LowValueRunInput, run_id: str):
+    runner.execute_steps(run_input, run_id)
+
+
+def _run_bottom_confirm_async(runner: BottomConfirmRunner, run_input: BottomConfirmInput, run_id: str):
     runner.execute_steps(run_input, run_id)
 
 

@@ -48,6 +48,13 @@ class LeftSideRankRequest(BaseModel):
     candidates: list[dict[str, Any]] = Field(default_factory=list)
 
 
+class BottomConfirmRunRequest(BaseModel):
+    symbols: list[str] = Field(default_factory=list)
+    left_side_preference: bool = True
+    right_side_preference: bool = False
+    user_id: Optional[str] = None
+
+
 class APIResponse(BaseModel):
     status: str = "success"
     data: Any = None

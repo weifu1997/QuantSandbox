@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from uuid import uuid4
 import logging
 from typing import Any
@@ -32,7 +33,8 @@ from backend.workflows.low_value_flow.logic_analyzer import LogicAnalyzer
 from backend.workflows.low_value_flow.pool_group_assigner import PoolGroupAssigner
 from backend.workflows.low_value_flow.price_zone_builder import PriceZoneBuilder
 from backend.workflows.low_value_flow.risk_assessor import RiskAssessor
-from backend.workflows.low_value_flow.rules import quick_risk_decision
+from backend.workflows.low_value_flow.risk_enricher import RiskEnricher
+from backend.workflows.low_value_flow.rules import quick_risk_decision, safe_float
 from backend.workflows.low_value_flow.schemas import LowValueRunInput, build_default_query
 from backend.workflows.low_value_flow.serializer import review_result_from_status
 from backend.workflows.low_value_flow.structure_verifier import StructureVerifier
@@ -62,6 +64,7 @@ class LowValueWorkflowRunner:
         self.structure_verifier = StructureVerifier()
         self.logic_analyzer = LogicAnalyzer()
         self.pool_group_assigner = PoolGroupAssigner()
+        self.risk_enricher = RiskEnricher(self.data_service, self.search_service)
 
     def _load_candidate_reviews(self, candidate) -> dict[str, CandidateReview]:
         reviews = getattr(candidate, 'reviews', None) or []
@@ -140,6 +143,66 @@ class LowValueWorkflowRunner:
             if status in {WorkflowRunStatus.COMPLETED, WorkflowRunStatus.FAILED, WorkflowRunStatus.CANCELLED}:
                 run.completed_at = utcnow()
 
+    def _extract_structure_data_from_mx(self, result) -> dict[str, Any]:
+        data: dict[str, Any] = {}
+        raw_json = ((result.raw or {}).get('raw_json') or {}) if result and result.ok else {}
+        dto_list = ((((raw_json.get('data') or {}).get('data') or {}).get('searchDataResultDTO') or {}).get('dataTableDTOList') or [])
+        for table in dto_list:
+            title = str(table.get('title') or '')
+            entity = table.get('entityTagDTO') or {}
+            if entity.get('fullName') and not data.get('name'):
+                data['name'] = entity.get('fullName')
+            values = table.get('table') or {}
+            name_map = table.get('nameMap') or {}
+            if '股息率(TTM)' in title or 'BOLL布林线LOW' in title:
+                dividend = self._table_series(values, name_map, '股息率(TTM)')
+                boll_low = self._table_series(values, name_map, 'BOLL布林线LOW')
+                if dividend:
+                    data['dividend_yield'] = dividend[0]
+                if boll_low and not data.get('support_price'):
+                    data['support_price'] = boll_low[0]
+            elif '历史最低价' in title:
+                low_price = self._table_series(values, name_map, '历史最低价')
+                if low_price:
+                    data['prior_low_price'] = low_price[0]
+                    data['support_price'] = low_price[0]
+            elif '区间涨跌幅' in title or '区间换手率' in title:
+                returns = self._table_series(values, name_map, '区间涨跌幅')
+                turnovers = self._table_series(values, name_map, '区间换手率')
+                if returns:
+                    data['month_return'] = returns[1] if len(returns) > 1 else returns[0]
+                    recent = safe_float(returns[0])
+                    month = safe_float(returns[1]) if len(returns) > 1 else safe_float(returns[0])
+                    quarter = safe_float(returns[2]) if len(returns) > 2 else month
+                    if recent is not None:
+                        data['decline_slope_10d'] = recent
+                    if month is not None:
+                        data['decline_slope_30d'] = month
+                    if recent is not None and month is not None:
+                        data['consolidation_range_pct'] = abs(recent - month)
+                    if quarter is not None and month is not None:
+                        data['consolidation_days'] = 20 if abs(month - quarter) <= 10 else 5
+                if turnovers:
+                    if len(turnovers) > 0:
+                        data['turnover_10_15d'] = turnovers[0]
+                    if len(turnovers) > 1:
+                        data['turnover_3m'] = turnovers[1]
+                    latest_turnover = safe_float(turnovers[0]) if len(turnovers) > 0 else None
+                    month_turnover = safe_float(turnovers[1]) if len(turnovers) > 1 else latest_turnover
+                    if latest_turnover is not None and month_turnover is not None:
+                        data['volume_breakdown_days'] = 0 if latest_turnover <= month_turnover * 1.5 else 1
+        return data
+
+    @staticmethod
+    def _table_series(table: dict, name_map: dict, label: str) -> list:
+        for key, mapped_name in name_map.items():
+            if str(mapped_name).strip() == label and key in table:
+                return list(table[key])
+        for key, series in table.items():
+            if key == label:
+                return list(series)
+        return []
+
     def _run_step1_xuangu(self, run_id: str, query: str) -> list[dict]:
         step_id = self._create_step(run_id, 'xuangu', 'Step 1 Xuangu')
         result = self.xuangu_service.run(query, timeout=300)
@@ -177,10 +240,23 @@ class LowValueWorkflowRunner:
                 candidate = rows.get(symbol)
                 if not candidate:
                     continue
-                risk_result = quick_risk_decision(item)
+                enriched_item = dict(item)
+                risk_enrichment = self.risk_enricher.enrich(enriched_item)
+                if risk_enrichment.audit_opinion:
+                    enriched_item['audit_opinion'] = risk_enrichment.audit_opinion
+                if risk_enrichment.regulatory_inquiry:
+                    enriched_item['regulatory_inquiry'] = risk_enrichment.regulatory_inquiry
+                if risk_enrichment.risk_flags:
+                    enriched_item['risk_flags'] = risk_enrichment.risk_flags
+                risk_result = quick_risk_decision(enriched_item)
+                review_payload = {
+                    'candidate': enriched_item,
+                    'risk_enrichment': risk_enrichment.as_dict(),
+                }
                 if risk_result.reject:
                     candidate.status = CandidateStatus.ELIMINATED
                     candidate.reason = {'step': 'risk', 'reason': risk_result.reason}
+                    candidate.data = enriched_item
                     rejected.append({'symbol': symbol, 'reason': risk_result.reason})
                     review_repo.create(
                         CandidateReview(
@@ -188,12 +264,13 @@ class LowValueWorkflowRunner:
                             step_code='risk',
                             review_result=review_result_from_status('fail'),
                             review_reason=risk_result.reason,
-                            review_data=item,
+                            review_data=review_payload,
                         )
                     )
                 elif risk_result.data_insufficient:
                     candidate.status = CandidateStatus.INSUFFICIENT_DATA
                     candidate.reason = {'step': 'risk', 'reason': risk_result.reason}
+                    candidate.data = enriched_item
                     rejected.append({'symbol': symbol, 'reason': risk_result.reason})
                     review_repo.create(
                         CandidateReview(
@@ -201,19 +278,20 @@ class LowValueWorkflowRunner:
                             step_code='risk',
                             review_result=review_result_from_status('insufficient'),
                             review_reason=risk_result.reason,
-                            review_data=item,
+                            review_data=review_payload,
                         )
                     )
                 else:
                     candidate.status = CandidateStatus.SELECTED
-                    survivors.append(item)
+                    candidate.data = enriched_item
+                    survivors.append(enriched_item)
                     review_repo.create(
                         CandidateReview(
                             candidate_id=candidate.id,
                             step_code='risk',
                             review_result=review_result_from_status('pass'),
                             review_reason='quick_risk_passed',
-                            review_data=item,
+                            review_data=review_payload,
                         )
                     )
         self._finish_step(step_id, WorkflowStepStatus.COMPLETED, result_data={'survivors': survivors, 'rejected': rejected})
@@ -243,6 +321,11 @@ class LowValueWorkflowRunner:
                     merged_data = dict(item)
                     if result.ok and isinstance(result.parsed, dict):
                         merged_data.update(result.parsed)
+                    if result.ok:
+                        merged_data.update({
+                            k: v for k, v in self._extract_structure_data_from_mx(result).items()
+                            if v not in (None, '', [])
+                        })
                     if not result.ok:
                         candidate.status = CandidateStatus.INSUFFICIENT_DATA
                         review_repo.create(CandidateReview(candidate_id=candidate.id, step_code='data', review_result=review_result_from_status('insufficient'), review_reason=result.error_message, review_data={}))
@@ -288,6 +371,12 @@ class LowValueWorkflowRunner:
                     review_repo.create(CandidateReview(candidate_id=candidate.id, step_code='search', review_result=review_result_from_status('insufficient'), review_reason=result.error_message, review_data={}))
                     continue
                 search_data = result.parsed if isinstance(result.parsed, dict) else {}
+                txt_path = str(search_data.get('txt_path') or '').strip()
+                if txt_path and Path(txt_path).exists():
+                    try:
+                        search_data = {**search_data, 'full_text': Path(txt_path).read_text(encoding='utf-8', errors='ignore')}
+                    except Exception:
+                        pass
                 logic = self.logic_analyzer.analyze(dict(candidate.data or item), search_data)
                 review_data = {'search': search_data, 'logic': logic.__dict__}
                 if logic.verdict == 'pass':

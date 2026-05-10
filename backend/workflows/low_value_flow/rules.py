@@ -6,14 +6,21 @@ from typing import Any
 
 LOSS_RISK_THRESHOLD = 0.0
 MISSING_DATA_PREFIX = "数据不足:"
-OTHER_MAJOR_RISK_FLAGS = {
+OTHER_HARD_REJECT_RISK_FLAGS = {
     "重大风险",
     "重大诉讼",
     "退市风险",
     "债务违约",
     "流动性危机",
     "财务造假",
+}
+OTHER_WARNING_RISK_FLAGS = {
     "信披异常",
+    "监管警示",
+    "监管措施",
+    "处罚",
+    "违规记录",
+    "监管问询",
 }
 
 
@@ -80,12 +87,21 @@ def _check_liquidity_crisis(data: dict[str, Any]) -> QuickRiskResult:
     return QuickRiskResult(reject=False, reason=None)
 
 
+def _is_bad_audit_opinion(audit: str) -> bool:
+    text = str(audit or '').strip()
+    if not text:
+        return False
+    if '标准无保留' in text or '无保留意见' == text:
+        return False
+    return any(token in text for token in ['保留', '否定', '无法表示'])
+
+
 def _check_financial_anomaly(data: dict[str, Any]) -> QuickRiskResult:
     audit = str(data.get('audit_opinion', '') or '').strip()
     inquiry = str(data.get('regulatory_inquiry', '') or '').strip()
     if not audit and not inquiry:
         return _data_insufficient('财务/监管字段缺失')
-    bad_audit = any(token in audit for token in ['保留', '否定', '无法表示'])
+    bad_audit = _is_bad_audit_opinion(audit)
     bad_inquiry = any(token in inquiry for token in ['问询', '立案', '处罚', '异常'])
     if bad_audit or bad_inquiry:
         return QuickRiskResult(reject=True, reason='财务/信披异常')
@@ -96,7 +112,7 @@ def _check_other_risks(data: dict[str, Any]) -> QuickRiskResult:
     flags = _normalize_flag_list(data.get('risk_flags'))
     if not flags:
         return _data_insufficient('风险标记缺失')
-    if any(any(keyword in flag for keyword in OTHER_MAJOR_RISK_FLAGS) for flag in flags):
+    if any(any(keyword in flag for keyword in OTHER_HARD_REJECT_RISK_FLAGS) for flag in flags):
         return QuickRiskResult(reject=True, reason='其他重大风险')
     return QuickRiskResult(reject=False, reason=None)
 
