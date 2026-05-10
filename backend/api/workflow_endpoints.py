@@ -409,8 +409,8 @@ def delete_watchlist_entry(entry_id: str):
         entry = watch_repo.get(entry_id)
         if not entry:
             raise HTTPException(status_code=404, detail="watchlist entry not found")
-        watch_repo.delete(entry)
-        return {"status": "success", "deleted": 1}
+        deleted = watch_repo.delete_by_symbol(entry.symbol)
+        return {"status": "success", "deleted": deleted, "symbol": entry.symbol}
 
 
 @router.post("/watchlist/batch-delete")

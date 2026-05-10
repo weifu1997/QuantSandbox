@@ -52,6 +52,7 @@ class PriceZoneBuilder:
 
         price = None
         current_pb = None
+        support_price = None
         if snapshot:
             price = self.risk_assessor.safe_float(snapshot.get('price'))
             current_pb = self.risk_assessor.safe_float(snapshot.get('pb'))
@@ -66,6 +67,24 @@ class PriceZoneBuilder:
                 current_pb = self.risk_assessor.safe_float(data.get(key))
                 if current_pb is not None:
                     break
+        for key in ('support_price', 'prior_low_price', 'support', 'supportLevel'):
+            support_price = self.risk_assessor.safe_float(data.get(key))
+            if support_price is not None:
+                break
+
+        extra = []
+        if month_ret is not None and month_ret <= -10:
+            extra.append('回撤较深')
+        if div is not None and div >= 3:
+            extra.append('高股息')
+
+        if support_price is not None and support_price > 0 and (current_pb is None or current_pb > 1.8):
+            low_price = support_price * 0.97
+            high_price = support_price * 1.05
+            suffix = '（支撑位附近）'
+            if extra:
+                suffix += '，' + ' / '.join(extra)
+            return f"{low_price:.2f}~{high_price:.2f} 元{suffix}"
 
         if price is not None and current_pb is not None and current_pb > 0:
             low_pb, high_pb = (1.0, 1.3) if current_pb >= 1.0 else (0.8, 1.0)
@@ -73,11 +92,6 @@ class PriceZoneBuilder:
             high_price = price * high_pb / current_pb
             if low_price > high_price:
                 low_price, high_price = high_price, low_price
-            extra = []
-            if month_ret is not None and month_ret <= -10:
-                extra.append('回撤较深')
-            if div is not None and div >= 3:
-                extra.append('高股息')
             suffix = f"（PB {low_pb:.1f}~{high_pb:.1f}）"
             if extra:
                 suffix += '，' + ' / '.join(extra)

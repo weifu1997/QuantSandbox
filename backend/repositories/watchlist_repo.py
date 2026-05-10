@@ -141,6 +141,12 @@ class WatchlistRepository(BaseRepository[WatchlistEntry]):
     def delete(self, entry: WatchlistEntry) -> None:
         self.session.delete(entry)
 
+    def delete_by_symbol(self, symbol: str) -> int:
+        from sqlalchemy import delete
+        stmt = delete(WatchlistEntry).where(WatchlistEntry.symbol == symbol)
+        result = self.session.execute(stmt)
+        return result.rowcount
+
     def delete_by_ids(self, entry_ids: list[str]) -> int:
         from sqlalchemy import delete
         stmt = delete(WatchlistEntry).where(WatchlistEntry.id.in_(entry_ids))

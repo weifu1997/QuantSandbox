@@ -82,7 +82,7 @@ def test_xuangu_parse_prefers_dynamic_and_plain_csv_columns(tmp_path):
     assert row['month_return'] == '7.83'
 
 
-def test_watch_price_zone_uses_candidate_latest_price_when_snapshot_missing():
+def test_watch_price_zone_prefers_support_band_for_high_pb_names():
     runner = LowValueWorkflowRunner()
     runner.price_zone_builder.extract_latest_snapshot = lambda sec_name, symbol: None
     zone = runner.price_zone_builder.derive_watch_price_zone(
@@ -91,9 +91,10 @@ def test_watch_price_zone_uses_candidate_latest_price_when_snapshot_missing():
         {
             'pb': '3.6164',
             'latest_price': '14.60',
+            'support_price': '12.41',
         },
     )
-    assert zone == '4.04~5.25 元（PB 1.0~1.3）'
+    assert zone == '12.04~13.03 元（支撑位附近）'
 
 
 def test_watchlist_recompute_needs_persisted_base_factors():
