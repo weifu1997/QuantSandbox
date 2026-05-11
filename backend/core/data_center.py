@@ -65,6 +65,16 @@ class DataCenter:
             "tushare": {"fail_count": 0, "cooldown_until": 0.0, "last_error": "", "last_status": ""},
             "akshare": {"fail_count": 0, "cooldown_until": 0.0, "last_error": "", "last_status": ""},
         }
+        self._source_min_interval_seconds = {
+            "tushare": 0.8,
+            "tickflow": 1.5,
+            "akshare": 2.5,
+        }
+        self._source_last_request_at = {
+            "tushare": 0.0,
+            "tickflow": 0.0,
+            "akshare": 0.0,
+        }
         self.cache_index_db = os.path.join(self.cache_dir, "cache_index.sqlite")
         self._init_cache_index_db()
         self.migrate_legacy_cache_files()
@@ -445,6 +455,26 @@ class DataCenter:
             state["cooldown_until"] = time.time() + cooldown_seconds
             logger.warning(f"⚠️ [DataCenter] {source} 进入冷却期 {cooldown_seconds}s")
 
+    def _force_source_cooldown(self, source: str, cooldown_seconds: int, reason: str = "", status: str = ""):
+        state = self._source_fail_state.setdefault(source, {"fail_count": 0, "cooldown_until": 0.0, "last_error": "", "last_status": ""})
+        state["fail_count"] = max(int(state.get("fail_count", 0)), 1)
+        state["cooldown_until"] = time.time() + cooldown_seconds
+        state["last_error"] = str(reason or state.get("last_error", "") or "")
+        state["last_status"] = str(status or state.get("last_status", "") or "")
+        logger.warning(f"⚠️ [DataCenter] {source} 强制进入冷却期 {cooldown_seconds}s，原因: {state['last_error'] or state['last_status'] or 'rate_limit'}")
+
+    def _apply_source_spacing(self, source: str):
+        min_interval = float(self._source_min_interval_seconds.get(source, 0.0) or 0.0)
+        if min_interval <= 0:
+            return
+        now = time.time()
+        last_at = float(self._source_last_request_at.get(source, 0.0) or 0.0)
+        wait_seconds = min_interval - (now - last_at)
+        if wait_seconds > 0:
+            logger.info(f"⏱️ [DataCenter] {source} 节流等待 {wait_seconds:.2f}s")
+            time.sleep(wait_seconds)
+        self._source_last_request_at[source] = time.time()
+
     def _source_in_cooldown(self, source: str) -> bool:
         state = self._source_fail_state.setdefault(source, {"fail_count": 0, "cooldown_until": 0.0, "last_error": "", "last_status": ""})
         return time.time() < float(state.get("cooldown_until", 0.0))
@@ -453,6 +483,7 @@ class DataCenter:
         if not self.tickflow_base_url or not self.tickflow_api_key:
             raise RuntimeError("TickFlow 配置未启用")
 
+        self._apply_source_spacing("tickflow")
         ts_code = self._to_ts_code(symbol)
         url = f"{self.tickflow_base_url}/v1/klines?symbol={urllib.parse.quote(ts_code)}&period=1d"
         response = requests.get(url, headers={"x-api-key": self.tickflow_api_key}, timeout=20)
@@ -538,6 +569,8 @@ class DataCenter:
                 if getattr(e, 'code', None) == 403:
                     reason = "HTTP 403 Forbidden：TickFlow API Key 可能无权限或接口未开通"
                 self._mark_source_failure("tickflow", reason=reason, status=str(getattr(e, 'code', '')))
+                if getattr(e, 'code', None) == 429:
+                    self._force_source_cooldown("tickflow", cooldown_seconds=300, reason=reason, status="429")
                 trace.append(f"tickflow:http_error:{getattr(e, 'code', '')}")
                 logger.warning(f"⚠️ [DataCenter] TickFlow 获取失败，切换到 AKShare: {symbol}，原因: {reason}")
             except Exception as e:
@@ -571,6 +604,7 @@ class DataCenter:
         new_df = pd.DataFrame()
         for attempt in range(max_retries):
             try:
+                self._apply_source_spacing("akshare")
                 new_df = ak.stock_zh_a_hist(
                     symbol=clean_code,
                     period="daily",
@@ -589,6 +623,7 @@ class DataCenter:
                     time.sleep(wait_time)
                 else:
                     self._mark_source_failure("akshare", reason=repr(e), status="error")
+                    self._force_source_cooldown("akshare", cooldown_seconds=300, reason=repr(e), status="error")
                     trace.append(f"akshare:error:{type(e).__name__}")
                     raise RuntimeError(f"❌ 下载 {symbol} 失败，已达最大重试次数。错误: {e}")
 
@@ -722,6 +757,7 @@ class DataCenter:
             method="POST",
         )
 
+        self._apply_source_spacing("tushare")
         with urllib.request.urlopen(request, timeout=20) as response:
             raw = response.read().decode("utf-8")
 
