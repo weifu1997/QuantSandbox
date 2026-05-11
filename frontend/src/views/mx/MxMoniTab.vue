@@ -83,17 +83,19 @@
 </template>
 
 <script setup>
-import { onMounted, reactive, ref } from 'vue';
+import { onMounted, onUnmounted, reactive, ref } from 'vue';
 import { ElMessage } from 'element-plus';
 import api from '../../api';
 
 const MONI_CACHE_KEY = 'quantsandbox:mx-moni:last-success';
+const MONI_CACHE_TTL_MS = 5 * 60 * 1000;
 
 const loading = ref(false);
 const jsonText = ref('');
 const summary = reactive({ totalAssets: null, availBalance: null, totalPosValue: null, posCount: 0 });
 const positions = ref([]);
 const orders = ref([]);
+let activeController = null;
 
 const statusTextMap = {
   0: '待处理', 1: '已申报', 2: '部成', 3: '部撤', 4: '已成', 5: '待撤', 6: '已撤', 7: '废单', 8: '已报', 9: '已拒绝', 200: '成功', 204: '失败',
@@ -112,13 +114,18 @@ const loadMoniCache = () => {
     if (!cached) return false;
     const parsed = JSON.parse(cached);
     if (!parsed || typeof parsed !== 'object') return false;
-    jsonText.value = parsed.moniJsonText || '';
+    const savedAt = Number(parsed.savedAt || 0);
+    if (!savedAt || (Date.now() - savedAt) > MONI_CACHE_TTL_MS) {
+      localStorage.removeItem(MONI_CACHE_KEY);
+      return false;
+    }
+    jsonText.value = '';
     summary.totalAssets = parsed.summary?.totalAssets ?? null;
     summary.availBalance = parsed.summary?.availBalance ?? null;
     summary.totalPosValue = parsed.summary?.totalPosValue ?? null;
     summary.posCount = parsed.summary?.posCount ?? 0;
-    positions.value = Array.isArray(parsed.positions) ? parsed.positions : [];
-    orders.value = Array.isArray(parsed.orders) ? parsed.orders : [];
+    positions.value = [];
+    orders.value = [];
     return true;
   } catch (e) {
     console.warn('读取 mx-moni 缓存失败', e);
@@ -129,15 +136,12 @@ const loadMoniCache = () => {
 const saveMoniCache = () => {
   try {
     localStorage.setItem(MONI_CACHE_KEY, JSON.stringify({
-      moniJsonText: jsonText.value,
       summary: {
         totalAssets: summary.totalAssets,
         availBalance: summary.availBalance,
         totalPosValue: summary.totalPosValue,
         posCount: summary.posCount,
       },
-      positions: positions.value,
-      orders: orders.value,
       savedAt: Date.now(),
     }));
   } catch (e) {
@@ -194,9 +198,17 @@ const hasMoniData = () => Boolean(
 );
 
 const runMoni = async (query) => {
+  if (activeController) {
+    activeController.abort();
+  }
+  const requestController = new AbortController();
+  activeController = requestController;
   loading.value = true;
   try {
-    const res = await api.post('/mx/moni', { query });
+    const res = await api.post('/mx/moni', { query }, { signal: requestController.signal });
+    if (activeController !== requestController) {
+      return;
+    }
     applyMoniResponse(res.data || {});
     if (hasMoniData()) {
       saveMoniCache();
@@ -207,6 +219,12 @@ const runMoni = async (query) => {
       ElMessage.info('查询成功，但暂无可展示数据');
     }
   } catch (e) {
+    if (e?.isCanceled || requestController.signal.aborted) {
+      return;
+    }
+    if (activeController !== requestController) {
+      return;
+    }
     if (loadMoniCache()) {
       ElMessage.warning('接口查询失败，已回退到上次缓存');
     } else {
@@ -214,12 +232,22 @@ const runMoni = async (query) => {
     }
     console.error(e);
   } finally {
-    loading.value = false;
+    if (activeController === requestController) {
+      activeController = null;
+      loading.value = false;
+    }
   }
 };
 
 onMounted(() => {
   loadMoniCache();
+});
+
+onUnmounted(() => {
+  if (activeController) {
+    activeController.abort();
+    activeController = null;
+  }
 });
 </script>
 

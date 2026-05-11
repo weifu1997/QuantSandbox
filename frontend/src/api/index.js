@@ -5,6 +5,19 @@ const api = axios.create({
   timeout: 30000,
 });
 
+api.interceptors.response.use(
+  (response) => response,
+  (error) => {
+    const normalized = error;
+    const code = String(error?.code || '');
+    const message = String(error?.message || '');
+    normalized.isTimeout = code === 'ECONNABORTED' || /timeout/i.test(message);
+    normalized.isCanceled = axios.isCancel(error) || code === 'ERR_CANCELED' || /canceled|aborted/i.test(message);
+    normalized.apiMessage = error?.response?.data?.message || error?.response?.data?.detail || message;
+    return Promise.reject(normalized);
+  }
+);
+
 export const getMeta = () => {
   return api.get('/meta');
 };
@@ -38,12 +51,20 @@ export const runLowValueWorkflow = (payload) => {
   return api.post('/workflows/low-value/run', payload);
 };
 
+export const runBottomConfirmWorkflow = (payload) => {
+  return api.post('/workflows/bottom-confirm/run', payload);
+};
+
 export const listWorkflowRuns = (params = {}) => {
   return api.get('/workflows', { params });
 };
 
 export const getWorkflowRun = (runId) => {
   return api.get(`/workflows/${runId}`);
+};
+
+export const getBottomConfirmRun = (runId) => {
+  return api.get(`/workflows/bottom-confirm/runs/${runId}`);
 };
 
 export const getWorkflowStep = (runId, stepCode) => {
