@@ -371,6 +371,20 @@ class DataCenter:
             "cache_enabled": bool(self.cache_enabled),
             "tickflow_last_error": self._source_fail_state.get("tickflow", {}).get("last_error", ""),
             "tickflow_last_status": self._source_fail_state.get("tickflow", {}).get("last_status", ""),
+            "tushare_last_error": self._source_fail_state.get("tushare", {}).get("last_error", ""),
+            "tushare_last_status": self._source_fail_state.get("tushare", {}).get("last_status", ""),
+            "akshare_last_error": self._source_fail_state.get("akshare", {}).get("last_error", ""),
+            "akshare_last_status": self._source_fail_state.get("akshare", {}).get("last_status", ""),
+            "source_fail_state": {
+                source: {
+                    "fail_count": int(state.get("fail_count", 0)),
+                    "cooldown_until": float(state.get("cooldown_until", 0.0)),
+                    "last_error": str(state.get("last_error", "") or ""),
+                    "last_status": str(state.get("last_status", "") or ""),
+                    "in_cooldown": self._source_in_cooldown(source),
+                }
+                for source, state in self._source_fail_state.items()
+            },
         }
 
     def get_source_priority(self) -> list[str]:
@@ -477,61 +491,81 @@ class DataCenter:
         df.attrs["data_source"] = "tickflow"
         return df
 
-    def _download_range_data(self, symbol: str, start_date: str, end_date: str) -> tuple[pd.DataFrame, str]:
-        """拉取指定区间数据，返回 df 和数据来源"""
+    def _download_range_data(self, symbol: str, start_date: str, end_date: str) -> tuple[pd.DataFrame, str, list[str]]:
+        """拉取指定区间数据，返回 df、最终数据来源、以及 fallback 轨迹。"""
+        trace: list[str] = []
         if start_date > end_date:
-            return pd.DataFrame(), "cache"
+            return pd.DataFrame(), "cache", [f"skip_invalid_range:{start_date}>{end_date}"]
 
         if self.tushare_base_url and self.tushare_token and not self._source_in_cooldown("tushare"):
             try:
                 logger.info(f"🌐 [DataCenter] 正在从 Tushare 代理下载数据: {symbol} {start_date}-{end_date}...")
+                trace.append("tushare:attempt")
                 df = self._fetch_from_tushare_proxy(symbol, start_date=start_date, end_date=end_date)
                 if not df.empty:
                     self._mark_source_success("tushare")
                     df.attrs["data_source"] = "tushare"
-                    return df, "tushare"
-                self._mark_source_failure("tushare")
+                    trace.append("tushare:success")
+                    return df, "tushare", trace
+                self._mark_source_failure("tushare", reason="Tushare 返回空数据", status="empty")
+                trace.append("tushare:empty")
                 logger.warning(f"⚠️ [DataCenter] Tushare 返回空数据，切换到 TickFlow: {symbol}")
             except Exception as e:
                 self._mark_source_failure("tushare", reason=repr(e), status="error")
+                trace.append(f"tushare:error:{type(e).__name__}")
                 logger.warning(f"⚠️ [DataCenter] Tushare 获取失败，切换到 TickFlow: {symbol}，原因: {e}")
         elif self.tushare_base_url and self.tushare_token:
+            trace.append("tushare:cooldown")
             logger.warning(f"⚠️ [DataCenter] Tushare 冷却中，跳过本次请求: {symbol}")
+        else:
+            trace.append("tushare:disabled")
 
         if self.tickflow_base_url and self.tickflow_api_key and not self._source_in_cooldown("tickflow"):
             try:
                 logger.info(f"🌐 [DataCenter] 正在从 TickFlow 下载数据: {symbol} {start_date}-{end_date}...")
+                trace.append("tickflow:attempt")
                 df = self._fetch_from_tickflow(symbol, start_date=start_date, end_date=end_date)
                 if not df.empty:
                     self._mark_source_success("tickflow")
                     df.attrs["data_source"] = "tickflow"
-                    return df, "tickflow"
+                    trace.append("tickflow:success")
+                    return df, "tickflow", trace
                 self._mark_source_failure("tickflow", reason="TickFlow 返回空数据", status="empty")
+                trace.append("tickflow:empty")
                 logger.warning(f"⚠️ [DataCenter] TickFlow 返回空数据，切换到 AKShare: {symbol}")
             except urllib.error.HTTPError as e:
                 reason = f"HTTP {getattr(e, 'code', '')} {getattr(e, 'reason', '')}"
                 if getattr(e, 'code', None) == 403:
                     reason = "HTTP 403 Forbidden：TickFlow API Key 可能无权限或接口未开通"
                 self._mark_source_failure("tickflow", reason=reason, status=str(getattr(e, 'code', '')))
+                trace.append(f"tickflow:http_error:{getattr(e, 'code', '')}")
                 logger.warning(f"⚠️ [DataCenter] TickFlow 获取失败，切换到 AKShare: {symbol}，原因: {reason}")
             except Exception as e:
                 self._mark_source_failure("tickflow", reason=repr(e), status="error")
+                trace.append(f"tickflow:error:{type(e).__name__}")
                 logger.warning(f"⚠️ [DataCenter] TickFlow 获取失败，切换到 AKShare: {symbol}，原因: {e}")
         elif self.tickflow_base_url and self.tickflow_api_key:
+            trace.append("tickflow:cooldown")
             logger.warning(f"⚠️ [DataCenter] TickFlow 冷却中，跳过本次请求: {symbol}")
+        else:
+            trace.append("tickflow:disabled")
 
         if not self.akshare_enabled:
-            return pd.DataFrame(), "cache"
+            trace.append("akshare:disabled")
+            return pd.DataFrame(), "cache", trace
 
         if ak is None:
+            trace.append("akshare:not_installed")
             logger.warning("⚠️ [DataCenter] akshare 未安装，跳过 AKShare 数据源")
-            return pd.DataFrame(), "remote"
+            return pd.DataFrame(), "remote", trace
 
         clean_code = self._clean_symbol(symbol)
         if self._source_in_cooldown("akshare"):
+            trace.append("akshare:cooldown")
             logger.warning(f"⚠️ [DataCenter] AKShare 冷却中，跳过本次请求: {symbol}")
-            return pd.DataFrame(), "remote"
+            return pd.DataFrame(), "remote", trace
         logger.info(f"🌐 [DataCenter] 正在从东财下载新数据: {symbol} {start_date}-{end_date}...")
+        trace.append("akshare:attempt")
 
         max_retries = 5
         new_df = pd.DataFrame()
@@ -545,19 +579,23 @@ class DataCenter:
                     adjust="qfq"
                 )
                 time.sleep(random.uniform(2.5, 5.0))
+                trace.append(f"akshare:success:attempt_{attempt + 1}")
                 break
             except Exception as e:
                 if attempt < max_retries - 1:
+                    trace.append(f"akshare:retry:{attempt + 1}:{type(e).__name__}")
                     wait_time = (2 ** attempt) + random.uniform(1.0, 3.0)
                     logger.info(f"⚠️ 触发防爬限制。等待 {wait_time:.2f} 秒后进行第 {attempt + 1} 次重试...")
                     time.sleep(wait_time)
                 else:
-                    self._mark_source_failure("akshare")
+                    self._mark_source_failure("akshare", reason=repr(e), status="error")
+                    trace.append(f"akshare:error:{type(e).__name__}")
                     raise RuntimeError(f"❌ 下载 {symbol} 失败，已达最大重试次数。错误: {e}")
 
         if new_df.empty:
-            self._mark_source_failure("akshare")
-            return pd.DataFrame(), "remote"
+            self._mark_source_failure("akshare", reason="AKShare 返回空数据", status="empty")
+            trace.append("akshare:empty")
+            return pd.DataFrame(), "remote", trace
 
         self._mark_source_success("akshare")
         new_df.rename(columns=self.columns_map, inplace=True)
@@ -567,7 +605,7 @@ class DataCenter:
         new_df.reset_index(drop=True, inplace=True)
         new_df["name"] = self.get_stock_name(symbol)
         new_df.attrs["data_source"] = "remote"
-        return new_df, "remote"
+        return new_df, "remote", trace
 
     def has_cached_data(self, symbol: str) -> bool:
         """判断本地是否已有该股票的任意缓存文件"""
@@ -776,6 +814,8 @@ class DataCenter:
         main_cache_record = self._get_cache_record(symbol)
         main_cache_file = os.path.join(self.cache_dir, f"{symbol}.parquet")
         cache_miss_note = ""
+        fallback_trace: list[str] = []
+        cache_miss = False
 
         # 1) 如果有主缓存且覆盖请求区间，直接读主缓存
         if not force_update and main_cache_record and os.path.exists(main_cache_record["file_path"]):
@@ -787,6 +827,10 @@ class DataCenter:
                 mask = (df['date'] >= pd.to_datetime(start_date)) & (df['date'] <= pd.to_datetime(end_date))
                 out = df.loc[mask].copy().reset_index(drop=True)
                 out.attrs["data_source"] = "cache"
+                out.attrs["resolved_source"] = "cache"
+                out.attrs["cache_miss"] = False
+                out.attrs["fallback_trace"] = ["cache:hit"]
+                out.attrs["source_detail"] = str(main_cache_record.get("source_detail") or main_cache_record.get("data_source") or "cache")
                 return out
 
         base_df = pd.DataFrame()
@@ -813,16 +857,22 @@ class DataCenter:
                             fetch_segments.append((right_start, end_date))
                     if fetch_segments:
                         cache_miss_note = "缓存未覆盖区间，自动拉远端"
+                        cache_miss = True
                 except Exception:
                     fetch_segments = [(start_date, end_date)]
                     cache_miss_note = "缓存未覆盖区间，自动拉远端"
+                    cache_miss = True
             else:
                 fetch_segments = [(start_date, end_date)]
                 cache_miss_note = "缓存未覆盖区间，自动拉远端"
+                cache_miss = True
         else:
             fetch_segments = [(start_date, end_date)]
             if main_cache_record:
                 cache_miss_note = "缓存未覆盖区间，自动拉远端"
+                cache_miss = True
+            elif not force_update:
+                cache_miss = True
 
         # 3) 拉取缺失区间并拼接
         fetched_frames = []
@@ -830,7 +880,8 @@ class DataCenter:
         for seg_start, seg_end in fetch_segments:
             if seg_start > seg_end:
                 continue
-            seg_df, seg_source = self._download_range_data(symbol, seg_start, seg_end)
+            seg_df, seg_source, seg_trace = self._download_range_data(symbol, seg_start, seg_end)
+            fallback_trace.extend(seg_trace)
             if not seg_df.empty:
                 fetched_frames.append(seg_df)
                 fetch_sources.append(seg_source)
@@ -843,20 +894,24 @@ class DataCenter:
         else:
             # 完全没有缺口但又需要刷新时，拉整段
             if force_update or main_cache_record is None:
-                new_df, seg_source = self._download_range_data(symbol, start_date, end_date)
+                new_df, seg_source, seg_trace = self._download_range_data(symbol, start_date, end_date)
+                fallback_trace.extend(seg_trace)
                 if not new_df.empty:
                     new_df = self._normalize_and_enrich(new_df, symbol)
                     fetch_sources.append(seg_source)
                     source_tags.append(seg_source)
 
         if new_df.empty and base_df.empty:
-            raise ValueError(f"⚠️ {symbol} 缓存与远端均未返回有效数据。")
+            detail = " -> ".join(fallback_trace) if fallback_trace else "no_source_attempt_recorded"
+            cache_state = "cache_miss" if cache_miss else "cache_hit_but_empty"
+            raise ValueError(f"⚠️ {symbol} 缓存与远端均未返回有效数据。{cache_state}; trace={detail}")
 
         # 4) 合并旧缓存 + 新数据
         merged_df = self._merge_cache_frames(base_df, new_df)
         merged_df = self._normalize_and_enrich(merged_df, symbol)
         if merged_df.empty:
-            raise ValueError(f"⚠️ {symbol} 缓存与远端均未返回有效数据。")
+            detail = " -> ".join(fallback_trace) if fallback_trace else "no_source_attempt_recorded"
+            raise ValueError(f"⚠️ {symbol} 合并后数据为空。trace={detail}")
 
         # 5) 写回单票主缓存
         merged_start = merged_df['date'].min().strftime('%Y%m%d')
@@ -866,6 +921,8 @@ class DataCenter:
             final_source = "cache_plus_remote"
         elif final_source in ("tushare", "remote") and base_df is not None and not base_df.empty:
             final_source = f"cache_plus_{final_source}"
+        resolved_source = fetch_sources[-1] if fetch_sources else "cache"
+        source_detail = " -> ".join(fallback_trace) if fallback_trace else (str(main_cache_record.get("source_detail") or final_source) if main_cache_record else final_source)
         self._write_main_cache(
             symbol=symbol,
             df=merged_df,
@@ -879,6 +936,10 @@ class DataCenter:
         mask = (merged_df['date'] >= pd.to_datetime(start_date)) & (merged_df['date'] <= pd.to_datetime(end_date))
         out = merged_df.loc[mask].copy().reset_index(drop=True)
         out.attrs["data_source"] = final_source
+        out.attrs["resolved_source"] = resolved_source
+        out.attrs["cache_miss"] = bool(cache_miss)
+        out.attrs["fallback_trace"] = fallback_trace or (["cache:hit"] if final_source == "cache" else [])
+        out.attrs["source_detail"] = source_detail
         if cache_miss_note:
             out.attrs["fetch_note"] = cache_miss_note
         return out

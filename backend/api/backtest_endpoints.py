@@ -1,15 +1,18 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 
 import pandas as pd
 from fastapi import APIRouter, HTTPException
 
 from backend.api.config_endpoints import get_data_center, load_config
+from backend.api.error_helpers import log_and_raise_http
 from backend.core.engine import BacktestEngine
 from backend.core.strategy import StrategyFactory
 
 router = APIRouter(prefix="/api", tags=["backtest"])
+logger = logging.getLogger(__name__)
 
 
 def _resolve_strategy_label(strategy_name: str) -> str:
@@ -22,10 +25,27 @@ def _resolve_strategy_label(strategy_name: str) -> str:
 
 async def fetch_stock_data_with_timeout(symbol: str, start_date: str, end_date: str, timeout: int = 20):
     dc = get_data_center()
-    return await asyncio.wait_for(
-        asyncio.to_thread(dc.fetch_stock_data, symbol, start_date, end_date),
-        timeout=timeout,
-    )
+    try:
+        return await asyncio.wait_for(
+            asyncio.to_thread(dc.fetch_stock_data, symbol, start_date, end_date),
+            timeout=timeout,
+        )
+    except asyncio.TimeoutError as exc:
+        source_status = dc.get_source_status() if hasattr(dc, "get_source_status") else {}
+        source_fail_state = source_status.get("source_fail_state", {}) if isinstance(source_status, dict) else {}
+        compact_sources = {
+            source: {
+                "fail_count": info.get("fail_count"),
+                "in_cooldown": info.get("in_cooldown"),
+                "last_status": info.get("last_status"),
+                "last_error": info.get("last_error"),
+            }
+            for source, info in source_fail_state.items()
+        }
+        raise TimeoutError(
+            f"{symbol} fetch timed out after {timeout}s; "
+            f"stage=single_ticker_fetch_envelope; cache_miss=unknown; sources={compact_sources}"
+        ) from exc
 
 
 def _extract_today_trades(logs: list[dict], end_date: str) -> list[dict]:
@@ -47,8 +67,54 @@ def _resolve_stock_name(df: pd.DataFrame, ticker: str) -> str:
         if name:
             return name
     except Exception:
-        pass
+        logger.warning("failed to resolve stock name", extra={"ticker": ticker}, exc_info=True)
     return ""
+
+
+def _normalize_ticker_output(ticker: str) -> str:
+    value = str(ticker or "").strip()
+    lowered = value.lower()
+    for prefix in ("sh", "sz", "bj"):
+        if lowered.startswith(prefix) and len(value) > len(prefix):
+            return value[len(prefix):]
+    return value
+
+
+def _extract_fetch_diagnostics(df: pd.DataFrame) -> dict:
+    return {
+        "data_source": str(df.attrs.get("data_source", "") or ""),
+        "resolved_source": str(df.attrs.get("resolved_source", "") or ""),
+        "cache_miss": bool(df.attrs.get("cache_miss", False)),
+        "fallback_trace": list(df.attrs.get("fallback_trace", []) or []),
+        "source_detail": str(df.attrs.get("source_detail", "") or ""),
+        "fetch_note": str(df.attrs.get("fetch_note", "") or "").strip(),
+    }
+
+
+def _build_empty_error(ticker: str) -> dict:
+    return {
+        "ticker": ticker,
+        "reason": "empty_dataframe",
+        "message": f"{ticker} 在指定区间无可用数据",
+        "data_source": "",
+        "resolved_source": "",
+        "cache_miss": None,
+        "fallback_trace": [],
+        "source_detail": "",
+    }
+
+
+def _build_exception_error(ticker: str, exc: Exception) -> dict:
+    return {
+        "ticker": ticker,
+        "reason": type(exc).__name__,
+        "message": str(exc),
+        "data_source": "",
+        "resolved_source": "",
+        "cache_miss": None,
+        "fallback_trace": [],
+        "source_detail": "",
+    }
 
 
 @router.get("/summary", summary="获取回测汇总")
@@ -67,53 +133,70 @@ async def get_summary(start_date: str, end_date: str):
     source_tags = []
     notes = []
     errors = []
-    for ticker in stock_pool:
-        try:
-            df = await fetch_stock_data_with_timeout(ticker, start_date, end_date)
-            if df is None or df.empty:
-                continue
-            source_tags.append(str(df.attrs.get("data_source", "")))
-            fetch_note = str(df.attrs.get("fetch_note", "")).strip()
-            if fetch_note:
-                notes.append(fetch_note)
-            signal_df = StrategyFactory.generate_signals(df, strategy_name, strategy_params)
-            engine = BacktestEngine(
-                initial_cash=float(account_conf.get("initial_cash", 100000.0)),
-                commission_rate=float(account_conf.get("commission_rate", 0.00025)),
-                tax_rate=float(account_conf.get("tax_rate", 0.0005)),
-            )
-            result = engine.run(signal_df, ticker)
-            metrics = result.get("metadata", {}) or {}
-            logs = result.get("logs", []) or []
-            stock_name = _resolve_stock_name(signal_df, ticker)
-            rows.append({
-                "ticker": ticker,
-                "display_name": stock_name or ticker,
-                "name": stock_name,
-                "strategy": _resolve_strategy_label(strategy_name),
-                "final_equity": metrics.get("final_equity", 0),
-                "return_rate": metrics.get("total_return", 0),
-                "trade_count": metrics.get("trade_count", 0),
-                "today_trades": _extract_today_trades(logs, end_date),
-            })
-        except Exception as exc:
-            errors.append(f"{ticker}: {exc}")
-    if errors and not rows:
-        raise HTTPException(status_code=500, detail={"message": "回测汇总生成失败", "errors": errors})
-    unique_sources = {s for s in source_tags if s}
-    if any("cache_plus" in s for s in unique_sources):
-        data_source = "cache_partial"
-    elif any(s in {"tushare", "remote"} for s in unique_sources):
-        data_source = "partial_fetch"
-    elif unique_sources == {"cache"}:
-        data_source = "cache_first"
-    else:
-        data_source = next(iter(unique_sources), "unknown")
-    fetch_note = "；".join(sorted(set(n for n in notes if n)))
-    if errors:
-        err_note = f"部分股票失败：{len(errors)} 只"
-        fetch_note = f"{fetch_note}；{err_note}" if fetch_note else err_note
-    return {"status": "success", "data": rows, "data_source": data_source, "fetch_note": fetch_note, "errors": errors}
+    try:
+        for ticker in stock_pool:
+            try:
+                df = await fetch_stock_data_with_timeout(ticker, start_date, end_date, timeout=30)
+                if df is None or df.empty:
+                    errors.append(_build_empty_error(ticker))
+                    continue
+                diag = _extract_fetch_diagnostics(df)
+                source_tags.append(diag["data_source"])
+                fetch_note = diag["fetch_note"]
+                if fetch_note:
+                    notes.append(fetch_note)
+                signal_df = StrategyFactory.generate_signals(df, strategy_name, strategy_params)
+                engine = BacktestEngine(
+                    initial_cash=float(account_conf.get("initial_cash", 100000.0)),
+                    commission_rate=float(account_conf.get("commission_rate", 0.00025)),
+                    tax_rate=float(account_conf.get("tax_rate", 0.0005)),
+                )
+                result = engine.run(signal_df, ticker)
+                metrics = result.get("metadata", {}) or {}
+                logs = result.get("logs", []) or []
+                stock_name = _resolve_stock_name(signal_df, ticker)
+                output_ticker = _normalize_ticker_output(ticker)
+                rows.append({
+                    "ticker": output_ticker,
+                    "display_name": stock_name or output_ticker,
+                    "name": stock_name,
+                    "strategy": _resolve_strategy_label(strategy_name),
+                    "final_equity": metrics.get("final_equity", 0),
+                    "return_rate": metrics.get("total_return", 0),
+                    "trade_count": metrics.get("trade_count", 0),
+                    "today_trades": _extract_today_trades(logs, end_date),
+                })
+            except Exception as exc:
+                errors.append(_build_exception_error(ticker, exc))
+        if errors and not rows:
+            return {
+                "status": "success",
+                "data": [],
+                "data_source": "unavailable",
+                "fetch_note": "全部股票获取失败",
+                "errors": errors,
+            }
+        unique_sources = {s for s in source_tags if s}
+        if any("cache_plus" in s for s in unique_sources):
+            data_source = "cache_partial"
+        elif any(s in {"tushare", "remote"} for s in unique_sources):
+            data_source = "partial_fetch"
+        elif unique_sources == {"cache"}:
+            data_source = "cache_first"
+        else:
+            data_source = next(iter(unique_sources), "unknown")
+        fetch_note = "；".join(sorted(set(n for n in notes if n)))
+        if errors:
+            err_note = f"部分股票失败：{len(errors)} 只"
+            fetch_note = f"{fetch_note}；{err_note}" if fetch_note else err_note
+        return {"status": "success", "data": rows, "data_source": data_source, "fetch_note": fetch_note, "errors": errors}
+    except Exception as exc:
+        log_and_raise_http(
+            500,
+            "回测汇总生成失败",
+            exc=exc,
+            context={"start_date": start_date, "end_date": end_date, "strategy_name": strategy_name, "stock_count": len(stock_pool), "errors": errors},
+        )
 
 
 @router.get("/detail/{ticker}", summary="获取个股回测详情")
@@ -168,4 +251,9 @@ async def get_stock_detail(ticker: str, start_date: str, end_date: str):
     except HTTPException:
         raise
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"获取 {ticker} 详情失败: {exc}")
+        log_and_raise_http(
+            500,
+            f"获取 {ticker} 详情失败",
+            exc=exc,
+            context={"ticker": ticker, "start_date": start_date, "end_date": end_date, "strategy_name": strategy_name},
+        )
