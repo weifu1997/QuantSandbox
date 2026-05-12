@@ -110,13 +110,13 @@ const formatNumber = (value) => {
 
 const loadMoniCache = () => {
   try {
-    const cached = localStorage.getItem(MONI_CACHE_KEY);
+    const cached = sessionStorage.getItem(MONI_CACHE_KEY);
     if (!cached) return false;
     const parsed = JSON.parse(cached);
     if (!parsed || typeof parsed !== 'object') return false;
     const savedAt = Number(parsed.savedAt || 0);
     if (!savedAt || (Date.now() - savedAt) > MONI_CACHE_TTL_MS) {
-      localStorage.removeItem(MONI_CACHE_KEY);
+      sessionStorage.removeItem(MONI_CACHE_KEY);
       return false;
     }
     jsonText.value = '';
@@ -135,7 +135,7 @@ const loadMoniCache = () => {
 
 const saveMoniCache = () => {
   try {
-    localStorage.setItem(MONI_CACHE_KEY, JSON.stringify({
+    sessionStorage.setItem(MONI_CACHE_KEY, JSON.stringify({
       summary: {
         totalAssets: summary.totalAssets,
         availBalance: summary.availBalance,
