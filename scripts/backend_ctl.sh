@@ -173,7 +173,7 @@ start() {
     MX_API_URL="https://mkapi2.dfcfs.com/finskillshub"
   fi
   export MX_API_URL
-  nohup env MX_APIKEY="${MX_APIKEY:-}" MX_API_URL="${MX_API_URL:-}" python3 -m uvicorn backend.main:app --host "$HOST" --port "$PORT" > "$LOG_FILE" 2>&1 &
+  nohup env MX_APIKEY="${MX_APIKEY:-}" MX_API_URL="${MX_API_URL:-}" bash -c 'cd "$0" && source .venv/bin/activate && exec python -m uvicorn backend.main:app --host "$1" --port "$2"' "$ROOT_DIR" "$HOST" "$PORT" > "$LOG_FILE" 2>&1 &
   echo $! > "$PID_FILE"
 
   if wait_for_backend_ready >/dev/null; then

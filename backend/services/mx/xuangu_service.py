@@ -19,22 +19,39 @@ class XuanguService:
     def __init__(self) -> None:
         self.data_center = DataCenter()
 
+    def run_raw(self, query: str, timeout: int = 120) -> dict[str, Any]:
+        query = str(query or "").strip()
+        if not query:
+            raise RuntimeError("query 不能为空")
+        return adapter_run_query(query, timeout=timeout)
+
+    def parse_core(self, raw: dict[str, Any]) -> dict[str, Any]:
+        return self._parse(raw, enrich=False)
+
+    def enrich_candidates(self, parsed: dict[str, Any], raw: dict[str, Any]) -> dict[str, Any]:
+        return self._parse(raw, enrich=True, pre_parsed=parsed)
+
     def run(self, query: str, timeout: int = 120) -> MXServiceResult:
         query = str(query or "").strip()
         if not query:
             return MXServiceResult(ok=False, tool=self.tool_name, query=query, error_message="query 不能为空")
         try:
-            raw = adapter_run_query(query, timeout=timeout)
-            parsed = self._parse(raw)
+            raw = self.run_raw(query, timeout=timeout)
+            parsed = self._parse(raw, enrich=True)
             return MXServiceResult(ok=True, tool=self.tool_name, query=query, raw=raw, parsed=parsed)
         except Exception as e:
             return MXServiceResult(ok=False, tool=self.tool_name, query=query, error_message=str(e))
 
-    def _parse(self, raw: dict[str, Any]) -> dict[str, Any]:
+    def _parse(self, raw: dict[str, Any], enrich: bool = True, pre_parsed: dict[str, Any] | None = None) -> dict[str, Any]:
         csv_path = raw.get("csv_path") or ""
-        candidates: list[dict[str, Any]] = []
-        hit_count = 0
-        excluded = {"ST": None, "科创板": None, "创业板": None, "北交所": None}
+        if pre_parsed:
+            candidates: list[dict[str, Any]] = list(pre_parsed.get("candidates", []) or [])
+            hit_count = int(pre_parsed.get("hit_count", 0) or 0)
+            excluded = dict(pre_parsed.get("excluded_checks", {}) or {"ST": None, "科创板": None, "创业板": None, "北交所": None})
+        else:
+            candidates = []
+            hit_count = 0
+            excluded = {"ST": None, "科创板": None, "创业板": None, "北交所": None}
         trade_date_hint = self._extract_trade_date_hint(raw)
 
         def first_non_empty(*values: Any) -> str:
@@ -56,7 +73,7 @@ class XuanguService:
 
         enrichment_cache: dict[str, dict[str, Any]] = {}
 
-        if csv_path and Path(csv_path).exists():
+        if not pre_parsed and csv_path and Path(csv_path).exists():
             with open(csv_path, "r", encoding="utf-8-sig", newline="") as f:
                 reader = csv.DictReader(f)
                 rows = list(reader)
@@ -82,20 +99,22 @@ class XuanguService:
                     plain_names=['区间涨跌幅(%)'],
                     hardcoded_names=['区间涨跌幅(%) 2026.04.08 - 2026.05.08'],
                 )
-                if not month_return:
+                if enrich and not month_return:
                     month_return = self._compute_month_return(symbol=symbol, latest_price=latest_price)
-                enrichment = enrichment_cache.get(symbol)
-                if enrichment is None:
-                    enrichment = self._fetch_candidate_enrichment(symbol, trade_date_hint=trade_date_hint)
-                    enrichment_cache[symbol] = enrichment
-                if not board:
-                    board = enrichment.get('board', '')
+                enrichment = {}
+                if enrich:
+                    enrichment = enrichment_cache.get(symbol)
+                    if enrichment is None:
+                        enrichment = self._fetch_candidate_enrichment(symbol, trade_date_hint=trade_date_hint)
+                        enrichment_cache[symbol] = enrichment
+                    if not board:
+                        board = enrichment.get('board', '')
                 dividend_yield = value_from_row(
                     row,
                     regex_patterns=[r'^年度股息率\(%\)\s+\d{4}\.\d{2}\.\d{2}$'],
                     plain_names=['年度股息率(%)'],
                     hardcoded_names=['年度股息率(%) 2025.12.31'],
-                ) or enrichment.get('dividend_yield', '')
+                ) or (enrichment.get('dividend_yield', '') if enrich else '')
                 if st_flag:
                     excluded["ST"] = st_flag == "否"
                 elif excluded["ST"] is None:
@@ -146,7 +165,7 @@ class XuanguService:
                     }
                 )
 
-        if not candidates:
+        if not pre_parsed and not candidates:
             raw_json = raw.get("raw_json") or {}
             data_list = (((raw_json.get("data") or {}).get("data") or {}).get("allResults") or {}).get("result", {}).get("dataList") or []
             hit_count = len(data_list)
@@ -154,16 +173,18 @@ class XuanguService:
                 symbol = first_non_empty(row.get("SECURITY_CODE"))
                 latest_price = first_non_empty(row.get("NEWEST_PRICE"), row.get("LATEST_PRICE"))
                 month_return = first_non_empty(row.get("MONTH_RETURN"))
-                if not month_return:
+                if enrich and not month_return:
                     month_return = self._compute_month_return(symbol=symbol, latest_price=latest_price)
                 board = first_non_empty(row.get("MARKET_SHORT_NAME"))
-                enrichment = enrichment_cache.get(symbol)
-                if enrichment is None:
-                    enrichment = self._fetch_candidate_enrichment(symbol, trade_date_hint=trade_date_hint)
-                    enrichment_cache[symbol] = enrichment
-                if not board:
-                    board = enrichment.get('board', '')
-                dividend_yield = first_non_empty(row.get("DIVIDEND_YIELD")) or enrichment.get('dividend_yield', '')
+                enrichment = {}
+                if enrich:
+                    enrichment = enrichment_cache.get(symbol)
+                    if enrichment is None:
+                        enrichment = self._fetch_candidate_enrichment(symbol, trade_date_hint=trade_date_hint)
+                        enrichment_cache[symbol] = enrichment
+                    if not board:
+                        board = enrichment.get('board', '')
+                dividend_yield = first_non_empty(row.get("DIVIDEND_YIELD")) or (enrichment.get('dividend_yield', '') if enrich else '')
                 st_flag = first_non_empty(row.get("ST股票"), row.get("ST_FLAG")) or '否'
                 candidates.append(
                     {

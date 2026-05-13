@@ -32,6 +32,17 @@ export const getSummary = (startDate, endDate) => {
   });
 };
 
+export const submitSummaryTask = (startDate, endDate) => {
+  return api.post('/summary/tasks', null, {
+    params: { start_date: startDate, end_date: endDate },
+    timeout: 10000,
+  });
+};
+
+export const getSummaryTask = (taskId) => {
+  return api.get(`/summary/tasks/${taskId}`, { timeout: 10000 });
+};
+
 export const getStockDetail = (ticker, startDate, endDate) => {
   return api.get(`/detail/${ticker}`, {
     params: { start_date: startDate, end_date: endDate }
@@ -46,61 +57,51 @@ export const updateConfig = (payload) => {
   return api.post('/config', payload);
 };
 
-// ===== 工作流 API =====
-export const runLowValueWorkflow = (payload) => {
-  return api.post('/workflows/low-value/run', payload);
+// ===== 策略 API =====
+export const getStrategies = () => {
+  return api.get('/strategies');
 };
 
-export const runBottomConfirmWorkflow = (payload) => {
-  return api.post('/workflows/bottom-confirm/run', payload);
+export const getFactors = () => {
+  return api.get('/factors');
 };
 
-export const listWorkflowRuns = (params = {}) => {
-  return api.get('/workflows', { params });
+export const runPortfolioBacktest = (payload) => {
+  return api.post('/strategies/portfolio/backtest', payload);
 };
 
-export const getWorkflowRun = (runId) => {
-  return api.get(`/workflows/${runId}`);
+export const runStrategyBacktest = (payload) => {
+  return api.post('/strategies/backtest', payload);
 };
 
-export const getBottomConfirmRun = (runId) => {
-  return api.get(`/workflows/bottom-confirm/runs/${runId}`);
+// ===== MX 选股 API =====
+export const submitXuanguTask = (payload) => {
+  return api.post('/mx/xuangu/tasks', payload, { timeout: 10000 });
 };
 
-export const getWorkflowStep = (runId, stepCode) => {
-  return api.get(`/workflows/${runId}/steps/${stepCode}`);
+export const getXuanguTask = (taskId) => {
+  return api.get(`/mx/xuangu/tasks/${taskId}`, { timeout: 10000 });
 };
 
-export const getWorkflowCandidates = (runId, status) => {
-  return api.get(`/workflows/${runId}/candidates`, { params: status ? { status } : {} });
+// ===== Alpha Research API =====
+export const runResearchDatasetBuild = (payload) => {
+  return api.post('/research/dataset/build', payload);
 };
 
-export const getWatchlist = (view = 'all') => {
-  return api.get('/watchlist', { params: { view } });
+export const runResearchFactorIC = (payload) => {
+  return api.post('/research/factor/ic', payload);
 };
 
-export const getLatestWatchlist = () => {
-  return api.get('/watchlist/latest');
+export const runResearchGroupBacktest = (payload) => {
+  return api.post('/research/factor/group-backtest', payload);
 };
 
-export const updateWatchlistEntry = (entryId, payload) => {
-  return api.patch(`/watchlist/${entryId}`, payload);
+export const runResearchTopNBacktest = (payload) => {
+  return api.post('/research/topn-backtest', payload);
 };
 
-export const deleteWatchlistEntry = (entryId) => {
-  return api.delete(`/watchlist/${entryId}`);
-};
-
-export const batchDeleteWatchlist = (ids) => {
-  return api.post('/watchlist/batch-delete', { ids });
-};
-
-export const volumeVerify = (payload) => {
-  return api.post('/workflows/volume-verify', payload);
-};
-
-export const leftSideRank = (payload) => {
-  return api.post('/workflows/left-side-rank', payload);
+export const runResearchReport = (payload) => {
+  return api.post('/research/report', payload, { timeout: 120000 });
 };
 
 export default api;

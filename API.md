@@ -154,61 +154,6 @@ Query MX模拟组合.
 }
 ```
 
-### Workflow Management
-
-#### POST /api/workflows/low-value/run
-Start a low value workflow.
-
-**Request:**
-```json
-{
-  "use_default_template": true,
-  "batch_size": 5,
-  "user_id": "test-user"
-}
-```
-
-**Response:**
-```json
-{
-  "status": "success",
-  "run_id": "workflow-run-id"
-}
-```
-
-#### GET /api/workflows/{run_id}
-Get workflow run details.
-
-**Response:**
-```json
-{
-  "status": "success",
-  "data": {
-    "run": {
-      "id": "run-id",
-      "user_id": "user-123",
-      "status": "completed",
-      "started_at": "2024-01-01T00:00:00",
-      "completed_at": "2024-01-01T00:05:00",
-      "total_steps": 5,
-      "config": {...}
-    },
-    "steps": [...],
-    "candidates": [...],
-    "watchlist": [...]
-  }
-}
-```
-
-#### GET /api/workflows/{run_id}/steps/{step_code}
-Get specific workflow step details.
-
-#### GET /api/workflows/{run_id}/candidates
-Get candidates for a workflow run (with optional status filter).
-
-#### GET /api/watchlist
-Get all watchlist entries.
-
 ## 📊  Response Format
 
 All API responses follow this format:
@@ -239,12 +184,6 @@ API has rate limiting: 100 requests per minute per IP.
 curl http://localhost:8000/api/detail/AAPL?start_date=20240101&end_date=20240201
 ```
 
-### Example: Run workflow
-```bash
-curl -X POST http://localhost:8000/api/workflows/low-value/run \
-  -H "Content-Type: application/json" \
-  -d '{"use_default_template": true, "batch_size": 5, "user_id": "user123"}'
-```
 
 ## 🚧  Error Handling
 

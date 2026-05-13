@@ -23,11 +23,26 @@
               <span class="status-text">{{ statusText }}</span>
             </div>
             <div class="summary-state" v-if="summaryState">{{ summaryState }}</div>
-            <el-button type="success" @click="advance30Days">前进 30 天 ⏩</el-button>
             <el-button type="primary" :loading="loading" @click="fetchData">执行回测</el-button>
           </div>
         </div>
       </template>
+
+      <div v-if="summaryTask.taskId" class="summary-task-card">
+        <div class="summary-task-title">回测汇总任务状态</div>
+        <div class="summary-task-grid">
+          <div class="summary-task-item"><span class="k">任务ID</span><span class="v">{{ summaryTask.taskId.slice(0, 8) }}</span></div>
+          <div class="summary-task-item"><span class="k">状态</span><span class="v"><span :class="['task-status-badge', summaryTask.status || 'unknown']">{{ summaryTask.status || '—' }}</span></span></div>
+          <div class="summary-task-item"><span class="k">阶段</span><span class="v">{{ summaryTask.progressStage || '—' }}</span></div>
+          <div class="summary-task-item"><span class="k">当前 ticker</span><span class="v">{{ summaryTask.currentTicker || '—' }}</span></div>
+          <div class="summary-task-item"><span class="k">进度</span><span class="v">{{ summaryTask.totalTickers ? `${summaryTask.completedTickers}/${summaryTask.totalTickers}` : '—' }}</span></div>
+          <div class="summary-task-item"><span class="k">结果来源</span><span class="v">{{ summaryTask.source ? (summaryTask.source === 'cache' ? '缓存' : '实时') : '—' }}</span></div>
+          <div class="summary-task-item"><span class="k">缓存年龄</span><span class="v">{{ summaryTask.cacheAgeMs ? `${summaryTask.cacheAgeMs}ms` : '—' }}</span></div>
+          <div class="summary-task-item"><span class="k">总耗时</span><span class="v">{{ summaryTask.elapsedMs ? `${summaryTask.elapsedMs}ms` : '—' }}</span></div>
+          <div class="summary-task-item"><span class="k">缓存清理</span><span class="v">{{ summaryTask.cacheCleanup.remaining >= 0 ? `删 ${summaryTask.cacheCleanup.removed} / 留 ${summaryTask.cacheCleanup.remaining}` : '—' }}</span></div>
+        </div>
+      </div>
+
 
       <el-table :data="tableData" style="width: 100%" v-loading="loading" @row-click="goToDetail" stripe table-layout="auto">
         <el-table-column prop="ticker" label="股票代码" min-width="120" />
@@ -75,7 +90,7 @@
 <script setup>
 import { ref, onMounted } from 'vue';
 import { useRouter } from 'vue-router';
-import { getMeta, getSummary, pingMeta } from '../api';
+import { getMeta, pingMeta, submitSummaryTask, getSummaryTask } from '../api';
 import { ElMessage } from 'element-plus';
 import dayjs from 'dayjs';
 
@@ -87,6 +102,8 @@ const tableData = ref([]);
 const statusState = ref('gray');
 const statusText = ref('未知');
 const summaryState = ref('');
+const summaryTask = ref({ taskId: '', status: '', source: '', elapsedMs: 0, cacheAgeMs: 0, progressStage: '', currentTicker: '', completedTickers: 0, totalTickers: 0, cacheCleanup: { removed: -1, remaining: -1 } });
+let summaryPollTimer = null;
 const dateShortcuts = [
   {
     text: '近 1 个月',
@@ -127,45 +144,76 @@ const refreshStatus = async () => {
   }
 };
 
-// 核心逻辑：时间轴一次前进 30 天
-const advance30Days = () => {
-  const currentEnd = dayjs(dateRange.value[1]);
-  // 起始日期变为上次的结束日期 + 1天
-  const nextStart = currentEnd.add(1, 'day');
-  // 结束日期往后推 30 天
-  const nextEnd = nextStart.add(30, 'day');
-  
-  dateRange.value = [nextStart.format('YYYYMMDD'), nextEnd.format('YYYYMMDD')];
-  fetchData(); // 自动触发回测
+const resolveStockName = (row) => String(row?.display_name || row?.name || row?.stock_name || row?.stockName || row?.ticker || '').trim();
+
+const applySummaryPayload = (payload) => {
+  const rows = Array.isArray(payload.data) ? payload.data.map((row) => ({
+    ...row,
+    display_name: resolveStockName(row),
+  })) : [];
+  const source = payload.data_source || payload.source || '';
+  const note = payload.fetch_note || '';
+  tableData.value = rows;
+  summaryTask.value.source = payload.source || '';
+  summaryTask.value.elapsedMs = Number(payload.elapsed_ms || 0);
+  summaryTask.value.cacheAgeMs = Number(payload.cache_age_ms || 0);
+  summaryTask.value.cacheCleanup = payload.cache_cleanup || summaryTask.value.cacheCleanup;
+  if (source === 'cache_first' || source === 'cache_partial' || source === 'cache') {
+    summaryState.value = `${note || '数据已返回'}（缓存）`;
+  } else if (source === 'partial_fetch') {
+    summaryState.value = note || '短区间优先 / 数据补齐中';
+  } else {
+    summaryState.value = note || '数据已返回';
+  }
+  if (!rows.length) {
+    ElMessage.warning('当前时间区间内数据不足或无交易记录');
+  }
 };
 
-
-const resolveStockName = (row) => String(row?.display_name || row?.name || row?.stock_name || row?.stockName || row?.ticker || '').trim();
+const pollSummaryTask = async (taskId) => {
+  try {
+    const res = await getSummaryTask(taskId);
+    const data = res?.data?.data || {};
+    summaryTask.value.taskId = data.task_id || taskId;
+    summaryTask.value.status = data.task_status || '';
+    const progress = data.progress || {};
+    summaryTask.value.progressStage = progress.stage || '';
+    summaryTask.value.currentTicker = progress.ticker || '';
+    summaryTask.value.completedTickers = Number(progress.completed_tickers || 0);
+    summaryTask.value.totalTickers = Number(progress.total_tickers || progress.total || 0);
+    if (progress.message) summaryState.value = progress.message;
+    if (data.task_status === 'completed' && data.result) {
+      applySummaryPayload(data.result);
+      loading.value = false;
+      if (summaryPollTimer) { clearInterval(summaryPollTimer); summaryPollTimer = null; }
+    } else if (data.task_status === 'failed') {
+      loading.value = false;
+      if (summaryPollTimer) { clearInterval(summaryPollTimer); summaryPollTimer = null; }
+      summaryState.value = data.error || '回测汇总任务失败';
+      ElMessage.error(data.error || '回测汇总任务失败');
+    }
+  } catch (error) {
+    loading.value = false;
+    if (summaryPollTimer) { clearInterval(summaryPollTimer); summaryPollTimer = null; }
+    ElMessage.error(error?.apiMessage || '汇总任务轮询失败');
+  }
+};
 
 const fetchData = async () => {
   loading.value = true;
-  summaryState.value = '数据加载中';
+  summaryState.value = '正在提交汇总任务';
+  summaryTask.value = { taskId: '', status: '', source: '', elapsedMs: 0, cacheAgeMs: 0, progressStage: '', currentTicker: '', completedTickers: 0, totalTickers: 0, cacheCleanup: { removed: -1, remaining: -1 } };
+  if (summaryPollTimer) { clearInterval(summaryPollTimer); summaryPollTimer = null; }
   try {
-    const res = await getSummary(dateRange.value[0], dateRange.value[1]);
-    const payload = res?.data || {};
-    const rows = Array.isArray(payload.data) ? payload.data.map((row) => ({
-      ...row,
-      display_name: resolveStockName(row),
-    })) : [];
-    const source = payload.data_source || '';
-    const note = payload.fetch_note || '';
-
-    tableData.value = rows;
-    if (source === 'cache_first' || source === 'cache_partial') {
-      summaryState.value = note || '短区间优先 / 数据补齐中';
-    } else if (source === 'partial_fetch') {
-      summaryState.value = note || '短区间优先 / 数据补齐中';
-    } else {
-      summaryState.value = note || '数据已返回';
-    }
-
-    if (!rows.length) {
-      ElMessage.warning('当前时间区间内数据不足或无交易记录');
+    const res = await submitSummaryTask(dateRange.value[0], dateRange.value[1]);
+    const data = res?.data?.data || {};
+    summaryTask.value.taskId = data.task_id || '';
+    summaryTask.value.status = data.cache_hit ? 'completed' : 'pending';
+    summaryTask.value.cacheCleanup = data.cache_cleanup || { removed: -1, remaining: -1 }; 
+    if (!summaryTask.value.taskId) throw new Error('未返回 task_id');
+    await pollSummaryTask(summaryTask.value.taskId);
+    if (loading.value) {
+      summaryPollTimer = setInterval(() => pollSummaryTask(summaryTask.value.taskId), 1500);
     }
   } catch (error) {
     const status = error?.response?.status;
@@ -173,14 +221,13 @@ const fetchData = async () => {
     if (status) {
       ElMessage.error(`后端接口请求失败（HTTP ${status}）`);
     } else if (message.includes('timeout')) {
-      ElMessage.error('后端响应超时，请稍后重试');
+      ElMessage.error('汇总任务提交超时，请稍后重试');
     } else if (message.includes('Network Error')) {
       ElMessage.error('前端无法连接后端，请检查地址、代理或浏览器网络');
     } else {
-      ElMessage.error('获取后端数据失败，请检查接口日志');
+      ElMessage.error(error?.apiMessage || '获取后端数据失败，请检查接口日志');
     }
     console.error(error);
-  } finally {
     loading.value = false;
   }
 };
@@ -220,6 +267,18 @@ onMounted(async () => {
 .label { font-size: 14px; font-weight: bold; color: #606266; }
 .button-group { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
 .summary-state { font-size: 12px; color: #909399; }
+.summary-task-card { background: #1a1e29; border: 1px solid #2b3139; border-radius: 12px; padding: 12px 14px; margin-bottom: 16px; }
+.summary-task-title { font-size: 13px; font-weight: 700; color: #eef2f7; margin-bottom: 10px; }
+.summary-task-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 8px 12px; }
+.summary-task-item { background: #131722; border: 1px solid #2b3139; border-radius: 8px; padding: 8px 10px; display: flex; flex-direction: column; gap: 4px; }
+.summary-task-item .k { font-size: 11px; color: #8a919e; }
+.summary-task-item .v { font-size: 13px; color: #eef2f7; word-break: break-all; }
+.task-status-badge { display: inline-flex; align-items: center; padding: 2px 8px; border-radius: 999px; font-size: 12px; font-weight: 700; border: 1px solid transparent; }
+.task-status-badge.pending { color: #f59e0b; background: rgba(245, 158, 11, 0.12); border-color: rgba(245, 158, 11, 0.35); }
+.task-status-badge.running { color: #60a5fa; background: rgba(96, 165, 250, 0.12); border-color: rgba(96, 165, 250, 0.35); }
+.task-status-badge.completed { color: #0ECB81; background: rgba(14, 203, 129, 0.12); border-color: rgba(14, 203, 129, 0.35); }
+.task-status-badge.failed { color: #F6465D; background: rgba(246, 70, 93, 0.12); border-color: rgba(246, 70, 93, 0.35); }
+.task-status-badge.unknown { color: #8a919e; background: rgba(138, 145, 158, 0.12); border-color: rgba(138, 145, 158, 0.35); }
 .status-light { display: inline-flex; align-items: center; gap: 6px; padding: 6px 10px; border-radius: 999px; border: 1px solid #dcdfe6; font-size: 12px; color: #606266; background: #fff; }
 .status-light .dot { width: 8px; height: 8px; border-radius: 50%; background: #8a919e; }
 .status-light.green .dot { background: #0ECB81; }
@@ -240,4 +299,6 @@ onMounted(async () => {
 .muted { color: #8a919e; }
 :deep(.el-table .cell) { white-space: nowrap; }
 :deep(.el-table__header th .cell) { white-space: nowrap; }
+
+
 </style>

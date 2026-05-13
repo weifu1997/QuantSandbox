@@ -10,24 +10,12 @@
               <span class="stock-name">{{ stockName || ticker }}</span>
               <span class="ticker-code">{{ ticker }}</span>
             </h2>
-            <span class="strategy-badge">{{ metadata.strategy_name || 'bollinger_bands' }}</span>
+            <span class="strategy-badge">{{ metadata.strategy_name || 'target_weight_demo' }}</span>
           </div>
           <div class="subtitle-row">
             <span>回测区间 {{ rangeLabel }}</span>
-            <span>已显示 {{ visibleCount }} / {{ totalDays }} 天</span>
             <span v-if="metadata.data_source">数据源 {{ metadata.data_source }}</span>
           </div>
-        </div>
-
-        <div class="time-controls">
-          <span class="progress-text">推演进度: {{ visibleCount }} / {{ totalDays }} 天</span>
-          <el-button-group>
-            <el-button type="warning" plain :icon="RefreshLeft" @click="resetPlayback" :disabled="loading">重置</el-button>
-            <el-button type="success" :icon="VideoPlay" @click="stepForward" :disabled="loading || isFinished">
-              推演 30 天 ⏩
-            </el-button>
-            <el-button type="primary" plain :icon="Right" @click="showAll" :disabled="loading || isFinished">揭晓全部</el-button>
-          </el-button-group>
         </div>
       </div>
 
@@ -50,11 +38,11 @@
         </div>
         <div class="stat-box">
           <div class="stat-label">交易胜率</div>
-          <div class="stat-value">{{ metadata.win_rate ?? '--' }}%</div>
+          <div class="stat-value">{{ formatWinRate(metadata) }}</div>
         </div>
         <div class="stat-box">
           <div class="stat-label">盈亏比</div>
-          <div class="stat-value">{{ metadata.pnl_ratio ?? '--' }}</div>
+          <div class="stat-value">{{ formatPnlRatio(metadata) }}</div>
         </div>
       </div>
     </section>
@@ -75,25 +63,94 @@
       <div class="section-head">
         <div>
           <h3 class="section-title">📝 已触发交易日志</h3>
-          <div class="section-note">当前展示 {{ visibleLogs.length }} 笔，随推演进度动态展开</div>
+          <div class="section-note">{{ logViewMode === 'trade' ? `当前显示 ${tradeViewLogs.length} 笔成交记录` : `当前显示 ${visibleLogs.length} 笔（总日志 ${logs.length} 笔）` }}</div>
+        </div>
+        <div class="log-toolbar">
+          <el-segmented v-model="logViewMode" :options="logViewOptions" />
+          <el-switch
+            v-if="logViewMode === 'debug'"
+            v-model="showAllLogs"
+            inline-prompt
+            active-text="显示全部日志"
+            inactive-text="只看成交"
+          />
         </div>
       </div>
-      <el-table :data="visibleLogs" style="width: 100%" height="250" class="dark-table" size="small">
-        <el-table-column prop="signal_date" label="信号日期" width="120">
-          <template #default="scope">{{ formatDate(scope.row.signal_date) }}</template>
-        </el-table-column>
-        <el-table-column prop="execution_date" label="成交日期" width="120">
+
+      <el-table v-if="logViewMode === 'trade'" :data="tradeViewLogs" style="width: 100%" height="250" class="dark-table" size="small">
+        <el-table-column prop="execution_date" label="成交日期" width="110">
           <template #default="scope">{{ formatDate(scope.row.execution_date) }}</template>
         </el-table-column>
-        <el-table-column prop="action" label="动作" width="80">
+        <el-table-column label="动作" width="80">
           <template #default="scope">
-            <span :class="scope.row.action === '买入' ? 'text-red' : 'text-green'">{{ scope.row.action }}</span>
+            <el-tag :type="actionTagType(scope.row.action)" size="small" effect="dark">{{ tradeActionLabel(scope.row.action) }}</el-tag>
           </template>
         </el-table-column>
-        <el-table-column prop="price" label="成交价" />
-        <el-table-column prop="shares" label="股数" />
-        <el-table-column prop="fee" label="摩擦成本" />
-        <el-table-column prop="reason" label="触发原因" />
+        <el-table-column prop="price" label="成交价" width="90">
+          <template #default="scope">{{ formatNum(scope.row.price) }}</template>
+        </el-table-column>
+        <el-table-column prop="shares" label="成交股数" width="100">
+          <template #default="scope">{{ formatNum(scope.row.shares) }}</template>
+        </el-table-column>
+        <el-table-column label="成交金额" width="110">
+          <template #default="scope">{{ formatNum(calcTradeAmount(scope.row)) }}</template>
+        </el-table-column>
+        <el-table-column label="手续费" width="100">
+          <template #default="scope">{{ formatNum(calcFee(scope.row)) }}</template>
+        </el-table-column>
+        <el-table-column prop="cash_after" label="成交后现金" width="110">
+          <template #default="scope">{{ formatNum(scope.row.cash_after) }}</template>
+        </el-table-column>
+        <el-table-column label="仓位变化" width="120">
+          <template #default="scope">{{ formatWeightTransition(scope.row.current_weight, scope.row.target_weight) }}</template>
+        </el-table-column>
+        <el-table-column prop="reason" label="说明" min-width="160">
+          <template #default="scope">{{ humanizeReason(scope.row.reason) }}</template>
+        </el-table-column>
+      </el-table>
+
+      <el-table v-else :data="visibleLogs" style="width: 100%" height="250" class="dark-table" size="small">
+        <el-table-column prop="signal_date" label="信号日期" width="110">
+          <template #default="scope">{{ formatDate(scope.row.signal_date) }}</template>
+        </el-table-column>
+        <el-table-column prop="execution_date" label="成交日期" width="110">
+          <template #default="scope">{{ formatDate(scope.row.execution_date) }}</template>
+        </el-table-column>
+        <el-table-column label="动作" width="70">
+          <template #default="scope">
+            <el-tag :type="actionTagType(scope.row.action)" size="small" effect="dark">{{ scope.row.action || '--' }}</el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column prop="target_weight" label="目标权重" width="90">
+          <template #default="scope">{{ formatWeight(scope.row.target_weight) }}</template>
+        </el-table-column>
+        <el-table-column prop="current_weight" label="当前权重" width="90">
+          <template #default="scope">{{ formatWeight(scope.row.current_weight) }}</template>
+        </el-table-column>
+        <el-table-column prop="price" label="成交价" width="90">
+          <template #default="scope">{{ formatNum(scope.row.price) }}</template>
+        </el-table-column>
+        <el-table-column prop="shares" label="股数" width="90">
+          <template #default="scope">{{ formatNum(scope.row.shares) }}</template>
+        </el-table-column>
+        <el-table-column prop="commission" label="佣金" width="90">
+          <template #default="scope">{{ formatNum(scope.row.commission) }}</template>
+        </el-table-column>
+        <el-table-column prop="tax" label="印花税" width="90">
+          <template #default="scope">{{ formatNum(scope.row.tax) }}</template>
+        </el-table-column>
+        <el-table-column prop="total_equity_before" label="交易前权益" width="110">
+          <template #default="scope">{{ formatNum(scope.row.total_equity_before) }}</template>
+        </el-table-column>
+        <el-table-column prop="total_equity_after" label="交易后权益" width="110">
+          <template #default="scope">{{ formatNum(scope.row.total_equity_after) }}</template>
+        </el-table-column>
+        <el-table-column prop="cash_after" label="交易后现金" width="110">
+          <template #default="scope">{{ formatNum(scope.row.cash_after) }}</template>
+        </el-table-column>
+        <el-table-column prop="reason" label="触发原因" min-width="140">
+          <template #default="scope">{{ scope.row.reason || '--' }}</template>
+        </el-table-column>
       </el-table>
     </section>
   </div>
@@ -102,7 +159,7 @@
 <script setup>
 import { ref, onMounted, onUnmounted, nextTick, computed } from 'vue';
 import { useRouter, useRoute } from 'vue-router';
-import { ArrowLeft, RefreshLeft, VideoPlay, Right } from '@element-plus/icons-vue';
+import { ArrowLeft } from '@element-plus/icons-vue';
 import { getStockDetail } from '../api';
 import { ElMessage } from 'element-plus';
 
@@ -123,11 +180,23 @@ let fullEquityData = [];
 let fullMarkers = [];
 let fullLogs = [];
 
-// 🌟 时空游标：当前展示的数据量
-const visibleCount = ref(0);
+const logs = ref([]);
+const showAllLogs = ref(false);
+const logViewMode = ref('trade');
+const logViewOptions = [
+  { label: '交易视图', value: 'trade' },
+  { label: '调试视图', value: 'debug' },
+];
+const isTradeAction = (action) => {
+  const normalized = String(action || '').toLowerCase();
+  return normalized === 'buy' || normalized === 'sell' || normalized === '买入' || normalized === '卖出';
+};
+const tradeViewLogs = computed(() => logs.value.filter((log) => isTradeAction(log?.action)));
+const visibleLogs = computed(() => {
+  if (showAllLogs.value) return logs.value;
+  return tradeViewLogs.value;
+});
 const totalDays = ref(0);
-const visibleLogs = ref([]); // 动态显示的日志
-const isFinished = computed(() => visibleCount.value >= totalDays.value);
 
 const klineChartRef = ref(null);
 const equityChartRef = ref(null);
@@ -156,6 +225,63 @@ const toBusinessDay = (value) => {
 };
 
 const formatDate = (value) => normalizeDateKey(value) || '--';
+const formatNum = (value) => {
+  if (value === null || value === undefined || value === '') return '--';
+  const num = Number(value);
+  if (Number.isNaN(num)) return '--';
+  if (Math.abs(num) < 0.01 && num !== 0) return num.toExponential(2);
+  return num.toFixed(2);
+};
+const hasClosedTrades = (meta) => Boolean(meta?.has_closed_trades) || Number(meta?.closed_trade_count || meta?.trade_count || 0) > 0;
+const formatWinRate = (meta) => {
+  if (meta?.win_rate_display) return meta.win_rate_display;
+  if (!hasClosedTrades(meta)) return '--';
+  const formatted = formatNum(meta?.win_rate);
+  return formatted === '--' ? '--' : `${formatted}%`;
+};
+const formatPnlRatio = (meta) => {
+  if (meta?.pnl_ratio_display) return meta.pnl_ratio_display;
+  if (!hasClosedTrades(meta)) return '--';
+  return formatNum(meta?.pnl_ratio);
+};
+const formatWeight = (value) => {
+  if (value === null || value === undefined || value === '') return '--';
+  const num = Number(value);
+  if (Number.isNaN(num)) return '--';
+  return (num * 100).toFixed(1) + '%';
+};
+const actionTagType = (action) => {
+  if (!action) return 'info';
+  if (action === '买入' || action === 'buy') return 'danger';
+  if (action === '卖出' || action === 'sell') return 'success';
+  if (action === 'hold' || action === '持有') return 'warning';
+  if (action === 'skipped' || action === '跳过') return 'info';
+  return 'info';
+};
+const tradeActionLabel = (action) => {
+  if (action === 'buy' || action === '买入') return '买入';
+  if (action === 'sell' || action === '卖出') return '卖出';
+  return action || '--';
+};
+const calcTradeAmount = (row) => Number(row?.price || 0) * Number(row?.shares || 0);
+const calcFee = (row) => {
+  const explicit = Number(row?.fee);
+  if (!Number.isNaN(explicit) && explicit) return explicit;
+  return Number(row?.commission || 0) + Number(row?.tax || 0);
+};
+const formatWeightTransition = (fromValue, toValue) => `${formatWeight(fromValue)} → ${formatWeight(toValue)}`;
+const humanizeReason = (reason) => {
+  const mapping = {
+    target_weight_buy: '按目标仓位买入',
+    target_weight_sell: '按目标仓位卖出',
+    trade_value_too_small_for_lot: '差额不足一手，未调仓',
+    sell_insufficient_shares_or_too_small: '可卖仓位不足一手，未调仓',
+    limit_up_cannot_buy: '涨停无法买入',
+    limit_down_cannot_sell: '跌停无法卖出',
+    suspended: '停牌，未成交',
+  };
+  return mapping[reason] || reason || '--';
+};
 const lookupKlineByDateKey = (dateKey) => fullKlineData.find((item) => normalizeDateKey(item.timeKey || item.time) === dateKey) || null;
 
 const darkThemeOptions = {
@@ -165,56 +291,30 @@ const darkThemeOptions = {
   rightPriceScale: { borderColor: '#2B3139' }
 };
 
-// 🌟 数据切片渲染引擎
-const renderSlice = () => {
+// 🌟 一次性加载全部数据到图表
+const loadAllData = () => {
   if (!candlestickSeries || !areaSeries) return;
 
-  // 1. 切割图表数据
-  const currentKlines = fullKlineData.slice(0, visibleCount.value);
-  const currentEquity = fullEquityData.slice(0, visibleCount.value);
+  // 全部 K 线和净值数据
+  candlestickSeries.setData(fullKlineData);
+  areaSeries.setData(fullEquityData);
 
-  // 2. 切割 Markers（只显示在当前时间轴内的箭头）
-  if (currentKlines.length > 0) {
-    const lastVisibleKey = currentKlines[currentKlines.length - 1].timeKey || normalizeDateKey(currentKlines[currentKlines.length - 1].time);
-    const currentMarkers = fullMarkers.filter(m => normalizeDateKey(m.timeKey || m.time) <= lastVisibleKey);
-    if (typeof candlestickSeries.setMarkers === 'function') {
-      candlestickSeries.setMarkers(currentMarkers);
-    } else if (typeof candlestickSeries.createPriceLine === 'function') {
-      // lightweight-charts 某些版本/API 组合下没有 setMarkers，先静默降级，避免整页渲染失败
-    }
-
-    // 3. 动态更新日志表格
-    visibleLogs.value = fullLogs.filter(log => normalizeDateKey(log.execution_date) <= lastVisibleKey);
+  // 全部 Markers
+  if (typeof candlestickSeries.setMarkers === 'function') {
+    candlestickSeries.setMarkers(fullMarkers);
   }
 
-  // 4. 将切片推入图表
-  candlestickSeries.setData(currentKlines);
-  areaSeries.setData(currentEquity);
+  // 全部日志
+  logs.value = fullLogs;
 
-  // 5. 让时间轴自动跟随最新的一根 K 线
+  // 让时间轴显示全部
   klineChart.timeScale().fitContent();
-};
-
-// 🌟 交互控制器
-const stepForward = () => {
-  visibleCount.value = Math.min(visibleCount.value + 30, totalDays.value);
-  renderSlice();
-};
-
-const showAll = () => {
-  visibleCount.value = totalDays.value;
-  renderSlice();
-};
-
-const resetPlayback = () => {
-  visibleCount.value = Math.min(60, totalDays.value); // 重置时默认显示前 60 天建仓期
-  renderSlice();
 };
 
 const initChartAndData = async () => {
   try {
-    const start = route.query.start || '20240101';
-    const end = route.query.end || '20240131';
+    const start = route.query.start || route.query.start_date || '20240101';
+    const end = route.query.end || route.query.end_date || '20240131';
     rangeLabel.value = `${start} ~ ${end}`;
     
     const res = await getStockDetail(props.ticker, start, end);
@@ -239,17 +339,21 @@ const initChartAndData = async () => {
     });
 
     fullLogs.forEach(log => {
-      const markerDate = normalizeDateKey(log.execution_date);
+      const markerDate = normalizeDateKey(log.execution_date || log.timestamp);
       if (seenDates.has(markerDate)) {
         const businessDay = toBusinessDay(markerDate);
         if (!businessDay) return;
+        const actionLower = String(log.action || '').toLowerCase();
+        const isBuy = actionLower === 'buy' || actionLower === '买入';
+        const isSell = actionLower === 'sell' || actionLower === '卖出';
+        if (!isBuy && !isSell) return;
         fullMarkers.push({
           time: businessDay,
           timeKey: markerDate,
-          position: log.action === '买入' ? 'belowBar' : 'aboveBar',
-          color: log.action === '买入' ? '#F6465D' : '#0ECB81',
-          shape: log.action === '买入' ? 'arrowUp' : 'arrowDown',
-          text: log.action === '买入' ? '买入信号' : '卖出信号',
+          position: isBuy ? 'belowBar' : 'aboveBar',
+          color: isBuy ? '#F6465D' : '#0ECB81',
+          shape: isBuy ? 'arrowUp' : 'arrowDown',
+          text: isBuy ? '买入' : '卖出',
         });
       }
     });
@@ -259,7 +363,7 @@ const initChartAndData = async () => {
     fullMarkers.sort((a, b) => normalizeDateKey(a.time).localeCompare(normalizeDateKey(b.time)));
 
     totalDays.value = fullKlineData.length;
-    visibleCount.value = Math.min(60, totalDays.value); // 初始加载前 60 天的数据
+    logs.value = fullLogs;
 
     await nextTick();
     
@@ -340,8 +444,8 @@ const initChartAndData = async () => {
       showTooltip(param);
     });
 
-    // 首次渲染切片
-    renderSlice();
+    // 首次渲染全部
+    loadAllData();
 
   } catch (error) {
     ElMessage.error('图表渲染失败，请检查控制台报错');
@@ -383,8 +487,6 @@ onUnmounted(() => {
 .ticker-code { font-size: 14px; font-weight: 400; color: #8a919e; }
 .strategy-badge { display: inline-flex; align-items: center; height: 28px; padding: 0 10px; border-radius: 999px; background: rgba(14, 203, 129, 0.12); color: #0ecb81; border: 1px solid rgba(14, 203, 129, 0.35); font-size: 12px; }
 .subtitle-row { display: flex; gap: 14px; flex-wrap: wrap; color: #8a919e; font-size: 12px; }
-.time-controls { display: flex; flex-direction: column; align-items: flex-end; gap: 10px; background: #1a1e29; padding: 12px 14px; border-radius: 12px; border: 1px solid #2B3139; }
-.progress-text { font-size: 14px; font-weight: 700; color: #f59e0b; }
 .stats-panel { display: flex; flex-wrap: wrap; gap: 12px; padding-top: 4px; }
 .stat-box { flex: 1; min-width: 120px; display: flex; flex-direction: column; align-items: center; justify-content: center; background: #1a1e29; border: 1px solid #2b3139; border-radius: 12px; padding: 12px 10px; }
 .stat-label { font-size: 12px; color: #8a919e; margin-bottom: 6px; }
@@ -407,6 +509,7 @@ onUnmounted(() => {
 .chart-tooltip .tooltip-right { text-align: right; }
 .chart-tooltip .tooltip-sep { height: 1px; background: #2b3139; margin: 6px 0; }
 .logs-wrapper { padding: 16px; }
+.log-toolbar { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
 .red { color: #F6465D !important; }
 .green { color: #0ECB81 !important; }
 .text-red { color: #F6465D; font-weight: bold; }

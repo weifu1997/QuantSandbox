@@ -41,37 +41,51 @@ class StubEngine:
     def __init__(self, *args, **kwargs):
         pass
 
-    def run(self, signal_df, ticker):
+    def run_with_positions(self, df, ticker, targets):
         return {
             "metadata": {
                 "final_equity": 12345.67,
                 "total_return": 12.34,
                 "trade_count": 2,
             },
+            "data": df,
             "logs": [],
         }
 
 
-class StubStrategyFactory:
-    @staticmethod
-    def generate_signals(df, strategy_name, strategy_params):
-        return df.copy()
+class StubStrategyRegistry:
+    def __init__(self):
+        self._strategies = {}
+
+    def get(self, name):
+        class StubStrategy:
+            param_schema = {}
+            def __init__(self, params=None):
+                self.params = params or {}
+            def generate_targets(self, df, symbol):
+                return []
+            def meta(self):
+                return {"name": name}
+        return StubStrategy
+
+    def create(self, name, params=None):
+        return self.get(name)(params)
 
 
 def test_summary_preserves_fetch_stock_data_diagnostics_and_normalizes_ticker(client, monkeypatch):
-    backtest_endpoints = importlib.import_module("backend.api.backtest_endpoints")
+    summary_service = importlib.import_module("backend.services.summary_async_service")
     monkeypatch.setattr(
-        backtest_endpoints,
+        summary_service,
         "load_config",
         lambda: {
             "stock_pool": ["sh603166"],
-            "strategy": {"name": "bollinger_bands", "parameters": {}},
+            "strategy": {"name": "multi_factor_target_weight", "parameters": {}},
             "account": {"initial_cash": 100000, "commission_rate": 0.00025, "tax_rate": 0.0005},
         },
     )
-    monkeypatch.setattr(backtest_endpoints, "get_data_center", lambda: StubDataCenterSuccess())
-    monkeypatch.setattr(backtest_endpoints, "BacktestEngine", StubEngine)
-    monkeypatch.setattr(backtest_endpoints, "StrategyFactory", StubStrategyFactory)
+    monkeypatch.setattr(summary_service, "get_data_center", lambda: StubDataCenterSuccess())
+    monkeypatch.setattr(summary_service, "BacktestEngine", StubEngine)
+    monkeypatch.setattr(summary_service, "get_strategy_registry", lambda: StubStrategyRegistry())
 
     response = client.get("/api/summary", params={"start_date": "20240101", "end_date": "20240131"})
 
@@ -86,17 +100,17 @@ def test_summary_preserves_fetch_stock_data_diagnostics_and_normalizes_ticker(cl
 
 
 def test_summary_errors_include_detailed_fetch_trace(client, monkeypatch):
-    backtest_endpoints = importlib.import_module("backend.api.backtest_endpoints")
+    summary_service = importlib.import_module("backend.services.summary_async_service")
     monkeypatch.setattr(
-        backtest_endpoints,
+        summary_service,
         "load_config",
         lambda: {
             "stock_pool": ["603166"],
-            "strategy": {"name": "bollinger_bands", "parameters": {}},
+            "strategy": {"name": "multi_factor_target_weight", "parameters": {}},
             "account": {"initial_cash": 100000, "commission_rate": 0.00025, "tax_rate": 0.0005},
         },
     )
-    monkeypatch.setattr(backtest_endpoints, "get_data_center", lambda: StubDataCenterFailure())
+    monkeypatch.setattr(summary_service, "get_data_center", lambda: StubDataCenterFailure())
 
     response = client.get("/api/summary", params={"start_date": "20240101", "end_date": "20240131"})
 
@@ -115,3 +129,29 @@ def test_summary_errors_include_detailed_fetch_trace(client, monkeypatch):
     assert "tushare:empty" in err["message"]
     assert "tickflow:cooldown" in err["message"]
     assert "akshare:error:RuntimeError" in err["message"]
+
+
+# ---------------------------------------------------------------------------
+# D-9 Regression: summary/detail must not fall back to old StrategyFactory
+# ---------------------------------------------------------------------------
+
+def test_summary_unknown_strategy_returns_empty_not_500(client, monkeypatch):
+    """D-9: summary with unknown strategy returns clean empty, not 500."""
+    summary_service = importlib.import_module("backend.services.summary_async_service")
+    monkeypatch.setattr(
+        summary_service,
+        "load_config",
+        lambda: {
+            "stock_pool": ["603166"],
+            "strategy": {"name": "nonexistent_strategy", "parameters": {}},
+            "account": {"initial_cash": 100000},
+        },
+    )
+
+    response = client.get("/api/summary", params={"start_date": "20240101", "end_date": "20240131"})
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["status"] == "success"
+    assert payload["data"] == []
+    assert payload["data_source"] == "unknown_strategy"

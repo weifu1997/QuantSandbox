@@ -1,16 +1,3 @@
-from backend.models.workflow import WorkflowRun, WorkflowRunStatus
-from backend.models.workflow_step import WorkflowStepRun
-from backend.models.candidate import Candidate, CandidateReview, CandidateStatus, CandidateReviewResult
-from backend.models.watchlist import WatchlistEntry, RiskLevel
+"""QuantSandbox 当前 alpha 主线未启用持久化业务模型。"""
 
-__all__ = [
-    "WorkflowRun",
-    "WorkflowRunStatus",
-    "WorkflowStepRun",
-    "Candidate",
-    "CandidateReview",
-    "CandidateStatus",
-    "CandidateReviewResult",
-    "WatchlistEntry",
-    "RiskLevel",
-]
+__all__: list[str] = []

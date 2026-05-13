@@ -5,8 +5,10 @@ import importlib
 import os
 import sys
 import logging
+from pathlib import Path
 
 import pytest
+import yaml
 from sqlalchemy import create_engine
 
 # Add project root to path
@@ -17,15 +19,19 @@ if project_root not in sys.path:
 # Set up logging
 logging.basicConfig(level=logging.INFO)
 
-# Test database URL
-TEST_DATABASE_URL = os.environ.get("TEST_DATABASE_URL", "sqlite:///:memory:")
+
+@pytest.fixture(scope="session")
+def test_database_url(tmp_path_factory):
+    db_dir = tmp_path_factory.mktemp("db")
+    db_path = Path(db_dir) / "quantsandbox_test.sqlite3"
+    return f"sqlite:///{db_path}"
 
 
 # Create test engine
 @pytest.fixture(scope="session")
-def engine():
+def engine(test_database_url):
     """Create a test database engine."""
-    return create_engine(TEST_DATABASE_URL)
+    return create_engine(test_database_url)
 
 
 # Fixture for database session
@@ -52,15 +58,33 @@ def db_session(engine):
 
 # Fixture for test client
 @pytest.fixture(scope="function")
-def client(monkeypatch):
-    """Create a test client for API testing with isolated test DB."""
-    monkeypatch.setenv("QUANTSANDBOX_DB_URL", TEST_DATABASE_URL)
+def client(monkeypatch, test_database_url, tmp_path):
+    """Create a test client for API testing with isolated test DB and config."""
+    monkeypatch.setenv("QUANTSANDBOX_DB_URL", test_database_url)
+
+    isolated_config = tmp_path / "config.yaml"
+    isolated_config.write_text(
+        yaml.safe_dump(
+            {
+                "account": {"initial_cash": 100000.0, "commission_rate": 0.00025, "tax_rate": 0.0005},
+                "stock_pool": ["sh600901", "sz000883"],
+                "strategy": {
+                    "name": "multi_factor_target_weight",
+                    "parameters": {"rsi_period": 7, "max_target_weight": 0.3, "rebalance_threshold": 0.03},
+                },
+                "data_source": {"cache": {"enabled": True}, "akshare": {"enabled": False}},
+            },
+            allow_unicode=True,
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("QUANTSANDBOX_CONFIG_PATH", str(isolated_config))
 
     for module_name in [
         "backend.db.session",
         "backend.api.config_endpoints",
         "backend.api.backtest_endpoints",
-        "backend.api.workflow_endpoints",
         "backend.main",
     ]:
         if module_name in sys.modules:

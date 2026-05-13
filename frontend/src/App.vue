@@ -4,8 +4,7 @@
       <el-menu-item index="/">📈 量化回测总览</el-menu-item>
       <el-menu-item index="/config">⚙️ 配置管理</el-menu-item>
       <el-menu-item index="/mx">🧠 妙想工具箱</el-menu-item>
-      <el-menu-item index="/workflow">🔍 低估发现流</el-menu-item>
-      <el-menu-item index="/watchlist">👁️ 观察池</el-menu-item>
+      <el-menu-item index="/research/alpha">🧪 Alpha 研究</el-menu-item>
     </el-menu>
     <router-view></router-view>
   </div>

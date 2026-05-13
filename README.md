@@ -123,14 +123,24 @@ account:
   tax_rate: 0.0005
 
 stock_pool:
-  - sh600519
-  - sz000858
+  - sh600901
+  - sz000883
+  - sh601033
+  - sh601598
+  - sh600098
+  - sz002091
+  - sh600177
+  - sz000543
+  - sh600795
 
 strategy:
-  name: dual_ma
+  name: target_weight_demo
   parameters:
-    fast_period: 5
-    slow_period: 20
+    rsi_period: 7
+    max_target_weight: 0.3
+    oversold_floor: 30
+    overbought_ceiling: 70
+    rebalance_threshold: 0.03
 
 data_source:
   tushare:

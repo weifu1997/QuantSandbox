@@ -11,7 +11,6 @@ from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import QueuePool
 
 from backend.db.base import Base
-from backend.workflows.types import WorkflowType
 
 BASE_DIR = Path(__file__).resolve().parents[2]
 DEFAULT_DB_DIR = BASE_DIR / "data"
@@ -45,134 +44,12 @@ if DB_URL.startswith("sqlite"):
         cursor.close()
 
 
-def _ensure_workflow_type_column() -> None:
-    if not DB_URL.startswith("sqlite:///"):
-        return
-    with engine.begin() as conn:
-        columns = [row[1] for row in conn.exec_driver_sql("PRAGMA table_info(workflow_runs)").fetchall()]
-        if not columns or "workflow_type" in columns:
-            return
-        conn.exec_driver_sql(
-            "ALTER TABLE workflow_runs ADD COLUMN workflow_type VARCHAR(32) NOT NULL DEFAULT 'low_value_discovery'"
-        )
-        conn.exec_driver_sql(
-            "UPDATE workflow_runs SET workflow_type = ? WHERE workflow_type IS NULL OR workflow_type = ''",
-            (WorkflowType.LOW_VALUE.value,),
-        )
-
-
-def _ensure_watchlist_manual_fields() -> None:
-    if not DB_URL.startswith("sqlite:///"):
-        return
-    with engine.begin() as conn:
-        columns = [row[1] for row in conn.exec_driver_sql("PRAGMA table_info(watchlist_entries)").fetchall()]
-        if not columns:
-            return
-        required_columns = {
-            'board': 'VARCHAR(32)',
-            'pe_ttm': 'VARCHAR(32)',
-            'pb': 'VARCHAR(32)',
-            'latest_price': 'VARCHAR(32)',
-            'dividend_yield': 'VARCHAR(32)',
-            'month_return': 'VARCHAR(32)',
-            'st_flag': 'VARCHAR(16)',
-        }
-        for column_name, column_type in required_columns.items():
-            if column_name not in columns:
-                conn.exec_driver_sql(f"ALTER TABLE watchlist_entries ADD COLUMN {column_name} {column_type}")
-
-
-def _ensure_watchlist_numeric_fields() -> None:
-    if not DB_URL.startswith("sqlite:///"):
-        return
-    with engine.begin() as conn:
-        columns = [row[1] for row in conn.exec_driver_sql("PRAGMA table_info(watchlist_entries)").fetchall()]
-        if not columns:
-            return
-        numeric_columns = {
-            'pe_ttm_num': 'REAL',
-            'pb_num': 'REAL',
-            'latest_price_num': 'REAL',
-            'dividend_yield_num': 'REAL',
-            'month_return_num': 'REAL',
-        }
-        for column_name, column_type in numeric_columns.items():
-            if column_name not in columns:
-                conn.exec_driver_sql(f"ALTER TABLE watchlist_entries ADD COLUMN {column_name} {column_type}")
-
-        backfill_pairs = [
-            ('pe_ttm', 'pe_ttm_num'),
-            ('pb', 'pb_num'),
-            ('latest_price', 'latest_price_num'),
-            ('dividend_yield', 'dividend_yield_num'),
-            ('month_return', 'month_return_num'),
-        ]
-        for text_col, num_col in backfill_pairs:
-            if text_col in columns:
-                conn.exec_driver_sql(
-                    f"""
-                    UPDATE watchlist_entries
-                    SET {num_col} = CASE
-                        WHEN TRIM({text_col}) GLOB '-?[0-9]*.?[0-9]*' AND TRIM({text_col}) NOT IN ('', '-', '--', '.', '-.')
-                        THEN CAST({text_col} AS REAL)
-                        ELSE NULL
-                    END
-                    WHERE {num_col} IS NULL
-                      AND {text_col} IS NOT NULL
-                      AND TRIM({text_col}) != ''
-                    """
-                )
-
-
-def _ensure_watchlist_v31a_fields() -> None:
-    if not DB_URL.startswith("sqlite:///"):
-        return
-    with engine.begin() as conn:
-        columns = [row[1] for row in conn.exec_driver_sql("PRAGMA table_info(watchlist_entries)").fetchall()]
-        if not columns:
-            return
-        v31a_columns = {
-            'pool_group': 'VARCHAR(32)',
-            'position_age': 'VARCHAR(16)',
-            'left_side_grade': 'VARCHAR(8)',
-            'stop_loss_price': 'FLOAT',
-            'target_price': 'FLOAT',
-            'buy_date': 'DATETIME',
-            'time_circuit_breaker_start': 'DATETIME',
-            'catalyst_signal': 'VARCHAR(256)',
-            'exit_condition': 'VARCHAR(256)',
-            'review_count': 'INTEGER DEFAULT 0',
-            'last_review_at': 'DATETIME',
-            'observation_note': 'TEXT',
-        }
-        for column_name, column_type in v31a_columns.items():
-            if column_name not in columns:
-                conn.exec_driver_sql(f"ALTER TABLE watchlist_entries ADD COLUMN {column_name} {column_type}")
-
-        conn.exec_driver_sql(
-            """
-            UPDATE watchlist_entries
-            SET pool_group = COALESCE(NULLIF(pool_group, ''), 'depth_value'),
-                review_count = COALESCE(review_count, 0),
-                time_circuit_breaker_start = COALESCE(time_circuit_breaker_start, created_at)
-            WHERE pool_group IS NULL
-               OR pool_group = ''
-               OR review_count IS NULL
-               OR time_circuit_breaker_start IS NULL
-            """
-        )
-
-
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, future=True, class_=Session)
 
 
 def init_db() -> None:
     """Create all registered tables."""
     Base.metadata.create_all(bind=engine)
-    _ensure_workflow_type_column()
-    _ensure_watchlist_manual_fields()
-    _ensure_watchlist_numeric_fields()
-    _ensure_watchlist_v31a_fields()
 
 
 @contextmanager

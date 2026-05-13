@@ -19,6 +19,9 @@ class ConfigUpdateRequest(BaseModel):
     stock_pool: list[str] | None = None
     strategy_name: str | None = None
     strategy_parameters: dict | None = None
+    initial_cash: float | None = None
+    commission_rate: float | None = None
+    tax_rate: float | None = None
 
 
 @lru_cache(maxsize=1)
@@ -26,14 +29,21 @@ def get_data_center() -> DataCenter:
     return DataCenter()
 
 
+def _config_path() -> str:
+    return os.path.abspath(
+        os.getenv("QUANTSANDBOX_CONFIG_PATH")
+        or os.path.join(os.path.dirname(__file__), "../../config.yaml")
+    )
+
+
 def load_config() -> dict:
-    config_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../config.yaml"))
+    config_path = _config_path()
     with open(config_path, "r", encoding="utf-8") as f:
         return yaml.safe_load(f)
 
 
 def save_config(config: dict) -> None:
-    config_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../config.yaml"))
+    config_path = _config_path()
     tmp_fd, tmp_path = tempfile.mkstemp(prefix="config_", suffix=".yaml", dir=os.path.dirname(config_path))
     try:
         with os.fdopen(tmp_fd, "w", encoding="utf-8") as f:
@@ -55,6 +65,7 @@ def get_config():
         "status": "success",
         "stock_pool": config.get("stock_pool", []),
         "strategy": config.get("strategy", {}),
+        "account": config.get("account", {}),
     }
 
 
@@ -67,6 +78,12 @@ def update_config(payload: ConfigUpdateRequest):
         config.setdefault("strategy", {})["name"] = payload.strategy_name
     if payload.strategy_parameters is not None:
         config.setdefault("strategy", {})["parameters"] = payload.strategy_parameters
+    if payload.initial_cash is not None:
+        config.setdefault("account", {})["initial_cash"] = payload.initial_cash
+    if payload.commission_rate is not None:
+        config.setdefault("account", {})["commission_rate"] = payload.commission_rate
+    if payload.tax_rate is not None:
+        config.setdefault("account", {})["tax_rate"] = payload.tax_rate
     save_config(config)
     return {"status": "success"}
 

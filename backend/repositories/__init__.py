@@ -1,13 +1,3 @@
-from backend.repositories.workflow_run_repo import WorkflowRunRepository
-from backend.repositories.workflow_step_repo import WorkflowStepRunRepository
-from backend.repositories.candidate_repo import CandidateRepository
-from backend.repositories.candidate_review_repo import CandidateReviewRepository
-from backend.repositories.watchlist_repo import WatchlistRepository
+"""QuantSandbox 当前 alpha 主线未启用业务 repository。"""
 
-__all__ = [
-    "WorkflowRunRepository",
-    "WorkflowStepRunRepository",
-    "CandidateRepository",
-    "CandidateReviewRepository",
-    "WatchlistRepository",
-]
+__all__: list[str] = []

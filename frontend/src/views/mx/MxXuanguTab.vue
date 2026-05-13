@@ -15,6 +15,21 @@
       />
       <el-button type="primary" :loading="loading" @click="runXuangu">查询</el-button>
     </div>
+    <div v-if="task.taskId" class="task-tip">
+      <span>任务ID：{{ task.taskId }}</span>
+      <span>状态：{{ task.status }}</span>
+      <span v-if="task.progress.stage">阶段：{{ task.progress.stage }}</span>
+      <span v-if="task.progress.message">说明：{{ task.progress.message }}</span>
+      <span v-if="task.source">来源：{{ task.source === 'cache' ? '缓存' : '实时查询' }}</span>
+      <span v-if="task.elapsedMs >= 0">耗时：{{ task.elapsedMs }}ms</span>
+      <span v-if="task.cacheAgeMs > 0">缓存年龄：{{ task.cacheAgeMs }}ms</span>
+      <span v-if="task.cleanup.removed >= 0">缓存清理：删 {{ task.cleanup.removed }} / 留 {{ task.cleanup.remaining }}</span>
+    </div>
+    <div v-if="task.timings.remote_elapsed_ms >= 0" class="task-tip">
+      <span>远端查询：{{ task.timings.remote_elapsed_ms }}ms</span>
+      <span>主结果解析：{{ task.timings.core_parse_elapsed_ms }}ms</span>
+      <span>增强补全：{{ task.timings.enrich_elapsed_ms }}ms</span>
+    </div>
   </el-card>
 
   <el-row :gutter="12" class="result-row">
@@ -97,7 +112,7 @@
 import { reactive, ref, watch } from 'vue';
 import { useRouter } from 'vue-router';
 import { ElMessage } from 'element-plus';
-import api from '../../api';
+import api, { submitXuanguTask, getXuanguTask } from '../../api';
 
 const router = useRouter();
 const props = defineProps({
@@ -111,6 +126,8 @@ watch(() => props.initialQuery, (val) => {
 
 const loading = ref(false);
 const jsonText = ref('');
+const task = reactive({ taskId: '', status: '', progress: { message: '', stage: '' }, source: '', elapsedMs: -1, cacheAgeMs: -1, timings: { remote_elapsed_ms: -1, core_parse_elapsed_ms: -1, enrich_elapsed_ms: -1 }, cleanup: { removed: -1, remaining: -1 } });
+let pollTimer = null;
 const columns = ref([]);
 const rows = ref([]);
 const summary = reactive({ securityCount: null, total: null, totalCondition: '', conditions: [] });
@@ -194,20 +211,71 @@ const addToStockPool = async () => {
   }
 };
 
+const applyTaskResult = (result) => {
+  task.source = result?.source || '';
+  task.elapsedMs = Number(result?.elapsed_ms ?? -1);
+  task.cacheAgeMs = Number(result?.cache_age_ms ?? -1);
+  task.timings = {
+    remote_elapsed_ms: Number(result?.timings?.remote_elapsed_ms ?? -1),
+    core_parse_elapsed_ms: Number(result?.timings?.core_parse_elapsed_ms ?? -1),
+    enrich_elapsed_ms: Number(result?.timings?.enrich_elapsed_ms ?? -1),
+  };
+  jsonText.value = result?.raw_json ? JSON.stringify(result.raw_json, null, 2) : '';
+  extractXuangu(result?.raw_json || {});
+};
+
+const pollTask = async (taskId) => {
+  try {
+    const res = await getXuanguTask(taskId);
+    const data = res.data?.data || {};
+    task.taskId = data.task_id || taskId;
+    task.status = data.task_status || '';
+    task.progress = data.progress || { message: '', stage: '' };
+    if (data.task_status === 'completed' && data.result) {
+      applyTaskResult(data.result);
+      loading.value = false;
+      ElMessage.success(data.result?.source === 'cache' ? '命中缓存' : '查询完成');
+      if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+    } else if (data.task_status === 'failed') {
+      loading.value = false;
+      ElMessage.error(data.error || '妙想选股查询失败');
+      if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+    }
+  } catch (e) {
+    loading.value = false;
+    if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+    ElMessage.error(e?.apiMessage || '查询任务轮询失败');
+  }
+};
+
 const runXuangu = async () => {
   const q = xuanguQuery.value.trim();
   if (!q) return ElMessage.warning('请输入查询内容');
+  if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
   loading.value = true;
+  task.taskId = '';
+  task.status = '';
+  task.progress = { message: '', stage: '' };
+  task.source = '';
+  task.elapsedMs = -1;
+  task.cacheAgeMs = -1;
+  task.timings = { remote_elapsed_ms: -1, core_parse_elapsed_ms: -1, enrich_elapsed_ms: -1 };
+  task.cleanup = { removed: -1, remaining: -1 }; 
   try {
-    const res = await api.post('/mx/xuangu', { query: q });
-    jsonText.value = res.data.raw_json ? JSON.stringify(res.data.raw_json, null, 2) : '';
-    extractXuangu(res.data.raw_json || {});
-    ElMessage.success('查询成功');
+    const res = await submitXuanguTask({ query: q });
+    const data = res.data?.data || {};
+    task.taskId = data.task_id || '';
+    task.status = data.cache_hit ? 'completed' : 'pending';
+    task.cleanup = data.cache_cleanup || { removed: -1, remaining: -1 };
+    if (!task.taskId) throw new Error('未返回 task_id');
+    await pollTask(task.taskId);
+    if (loading.value) {
+      pollTimer = setInterval(() => pollTask(task.taskId), 1500);
+    }
   } catch (e) {
-    ElMessage.error('妙想选股查询失败');
-    console.error(e);
-  } finally {
     loading.value = false;
+    ElMessage.error(e?.apiMessage || '妙想选股查询失败');
+    console.error(e);
   }
 };
 </script>
@@ -225,6 +293,7 @@ const runXuangu = async () => {
 .empty-tip { color: #8a919e; padding: 8px 0; }
 .query-row { display: flex; gap: 12px; align-items: center; }
 .query-row :deep(.el-input) { flex: 1; }
+.task-tip { margin-top: 10px; color: #8a919e; font-size: 12px; display: flex; gap: 12px; flex-wrap: wrap; }
 :deep(.el-input__wrapper) { background: #0f131a !important; box-shadow: 0 0 0 1px #3b4351 inset !important; }
 :deep(.el-input__inner) { color: #eef2f7 !important; }
 :deep(.el-input__inner::placeholder) { color: #8a919e !important; }

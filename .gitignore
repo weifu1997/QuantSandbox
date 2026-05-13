@@ -1,6 +1,7 @@
 # 1. Python 依赖与缓存
 venv/
 .venv/
+.venv-tests/
 __pycache__/
 *.pyc
 .pytest_cache/
@@ -12,6 +13,8 @@ npm-debug.log*
 
 # 3. 本地产生的大型数据文件
 data/cache/
+data/mx_cache/
+data/.startup_housekeeping.lock
 *.parquet
 
 # 4. 编辑器与系统配置

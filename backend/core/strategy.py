@@ -1,47 +1,54 @@
 from __future__ import annotations
 
+from abc import ABC, abstractmethod
+from dataclasses import dataclass, field
+from typing import Any
+
 import pandas as pd
 
-from backend.core.strategy_common import board_limit_ratio
-from backend.core.strategies.dual_ma import DualMaStrategy
-from backend.core.strategies.bollinger_bands import BollingerBandsStrategy
-from backend.core.strategies.rsi_reversal import RsiReversalStrategy
+
+@dataclass(slots=True)
+class PositionTarget:
+    """多因子/仓位管理路径的目标仓位契约。"""
+
+    symbol: str
+    target_weight: float
+    confidence: float = 0.0
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def bar_date(self) -> str | None:
+        """从 metadata 提取 bar_date，供引擎侧直接使用。"""
+        return self.metadata.get("bar_date")
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "symbol": self.symbol,
+            "target_weight": self.target_weight,
+            "confidence": self.confidence,
+            "metadata": self.metadata,
+        }
 
 
-class StrategyFactory:
-    """量化策略工厂：只负责路由与公共字段补齐。"""
+class Strategy(ABC):
+    """新策略层基类：依赖因子、参数与目标仓位输出。"""
 
-    @staticmethod
-    def generate_signals(df: pd.DataFrame, strategy_name: str, params: dict) -> pd.DataFrame:
-        df = df.copy()
-        df["trade_signal"] = 0
+    name: str = "base_strategy"
+    description: str = ""
+    factor_names: list[str] = []
+    parameter_schema: dict[str, Any] = {}
 
-        if strategy_name == "dual_ma":
-            result = DualMaStrategy.generate(df, params)
-        elif strategy_name == "bollinger_bands":
-            result = BollingerBandsStrategy.generate(df, params)
-        elif strategy_name == "rsi_reversal":
-            result = RsiReversalStrategy.generate(df, params)
-        else:
-            raise ValueError(f"未知的策略名称: {strategy_name}")
+    def __init__(self, params: dict[str, Any] | None = None):
+        self.params = params or {}
 
-        if "symbol" not in result.columns and "ts_code" in result.columns:
-            result["symbol"] = result["ts_code"]
-        if "name" not in result.columns:
-            result["name"] = ""
-        if "list_date" not in result.columns:
-            result["list_date"] = ""
-        if "delist_date" not in result.columns:
-            result["delist_date"] = ""
-        if "limit_ratio" not in result.columns:
-            result["limit_ratio"] = result.apply(
-                lambda row: board_limit_ratio(
-                    row.get("symbol", ""),
-                    row.get("name", ""),
-                    row.get("list_date", ""),
-                    row.get("delist_date", ""),
-                    str(row.get("date", ""))[:10],
-                ),
-                axis=1,
-            )
-        return result
+    def meta(self) -> dict[str, Any]:
+        return {
+            "name": self.name,
+            "description": self.description,
+            "factor_names": list(self.factor_names),
+            "parameter_schema": dict(self.parameter_schema),
+        }
+
+    @abstractmethod
+    def generate_targets(self, df: pd.DataFrame, symbol: str) -> list[PositionTarget]:
+        """基于行情与因子结果输出绝对目标权重。"""

@@ -70,27 +70,31 @@ class DataCenter:
         self.migrate_legacy_cache_files()
 
     def _load_data_source_config(self):
-        """从项目根 config.yaml 读取数据源配置"""
+        """从项目根 config.yaml 读取数据源配置，并允许环境变量覆盖敏感凭证。"""
         config_path = os.path.abspath(os.path.join(self.base_path, "config.yaml"))
-        if not os.path.exists(config_path):
-            return
-        try:
-            with open(config_path, "r", encoding="utf-8") as f:
-                config = yaml.safe_load(f) or {}
-            ds = config.get("data_source", {}) or {}
+        config: dict = {}
+        if os.path.exists(config_path):
+            try:
+                with open(config_path, "r", encoding="utf-8") as f:
+                    config = yaml.safe_load(f) or {}
+            except Exception as e:
+                logger.warning(f"⚠️ [DataCenter] 读取数据源配置失败: {e}")
+                config = {}
 
-            tickflow = ds.get("tickflow", {}) or {}
-            self.tickflow_base_url = str(tickflow.get("base_url", "")).strip().rstrip("/") if tickflow.get("enabled", False) else ""
-            self.tickflow_api_key = str(tickflow.get("api_key", "")).strip() if tickflow.get("enabled", False) else ""
+        ds = config.get("data_source", {}) or {}
 
-            tushare = ds.get("tushare", {}) or {}
-            self.tushare_base_url = str(tushare.get("base_url", "")).strip().rstrip("/") if tushare.get("enabled", False) else ""
-            self.tushare_token = str(tushare.get("token", "")).strip() if tushare.get("enabled", False) else ""
+        tickflow = ds.get("tickflow", {}) or {}
+        tickflow_enabled = bool(tickflow.get("enabled", False))
+        self.tickflow_base_url = str(tickflow.get("base_url", "")).strip().rstrip("/") if tickflow_enabled else ""
+        self.tickflow_api_key = str(os.getenv("TICKFLOW_API_KEY") or tickflow.get("api_key", "")).strip() if tickflow_enabled else ""
 
-            self.akshare_enabled = bool((ds.get("akshare", {}) or {}).get("enabled", True))
-            self.cache_enabled = bool((ds.get("cache", {}) or {}).get("enabled", True))
-        except Exception as e:
-            logger.warning(f"⚠️ [DataCenter] 读取数据源配置失败: {e}")
+        tushare = ds.get("tushare", {}) or {}
+        tushare_enabled = bool(tushare.get("enabled", False))
+        self.tushare_base_url = str(tushare.get("base_url", "")).strip().rstrip("/") if tushare_enabled else ""
+        self.tushare_token = str(os.getenv("TUSHARE_TOKEN") or tushare.get("token", "")).strip() if tushare_enabled else ""
+
+        self.akshare_enabled = bool((ds.get("akshare", {}) or {}).get("enabled", True))
+        self.cache_enabled = bool((ds.get("cache", {}) or {}).get("enabled", True))
 
     def _clean_symbol(self, symbol: str) -> str:
         if symbol.startswith(("sh", "sz")):
@@ -323,7 +327,12 @@ class DataCenter:
     def _write_main_cache(self, symbol: str, df: pd.DataFrame, start_date: str, end_date: str, data_source: str, remark: str = "") -> str:
         """写入单票主缓存并更新索引"""
         file_path = os.path.join(self.cache_dir, f"{symbol}.parquet")
-        df.to_parquet(file_path, index=False)
+        cache_df = df.copy()
+        for col in ["amplitude", "turnover", "name", "list_date", "delist_date"]:
+            if col in cache_df.columns:
+                cache_df[col] = cache_df[col].where(cache_df[col].notna(), "")
+                cache_df[col] = cache_df[col].astype("string")
+        cache_df.to_parquet(file_path, index=False)
         self._upsert_cache_record(
             symbol=symbol,
             file_path=file_path,

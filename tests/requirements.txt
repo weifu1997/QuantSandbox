@@ -1,5 +1,20 @@
+# QuantSandbox 测试依赖
+#
+# 安装顺序（在 .venv 中）：
+#   pip install -r requirements.txt
+#   pip install -r tests/requirements.txt
+
 fastapi[testclient]>=0.104.0
+httpx>=0.28.0
 pytest>=7.4.0
 pytest-cov>=4.1.0
+pytest-asyncio>=0.21.0
 requests>=2.31.0
 sqlalchemy>=2.0.0
+
+# 测试代码中直接 import 的运行依赖
+# （requirements.txt 已包含，但显式声明确保测试环境自检）
+pandas>=2.0.0
+numpy>=1.24.0
+PyYAML>=6.0
+pyarrow>=14.0.0
